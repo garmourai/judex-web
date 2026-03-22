@@ -1,0 +1,180 @@
+.replay-wrapper {
+  width: 100%;
+  max-width: 960px;
+  background: #111113;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* In fullscreen, the video fills the screen and controls overlay the bottom */
+.replay-wrapper:fullscreen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+}
+.replay-wrapper:fullscreen .stream-player {
+  position: absolute;
+  inset: 0;
+  max-width: none;
+}
+.replay-wrapper:fullscreen .stream-player-video-wrap {
+  aspect-ratio: unset;
+  height: 100%;
+  border-radius: 0;
+}
+.replay-wrapper:fullscreen .replay-seek-bar,
+.replay-wrapper:fullscreen .replay-controls {
+  position: relative;
+  z-index: 10;
+}
+.replay-wrapper:fullscreen .replay-fs-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
+  padding-top: 2rem;
+}
+
+/* ── Seek bar ────────────────────────────────────────────────── */
+.replay-seek-bar {
+  padding: 0.35rem 0.75rem 0;
+}
+
+.replay-seeker {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 5px;
+  border-radius: 3px;
+  cursor: pointer;
+  background: linear-gradient(
+    to right,
+    #3b82f6 0%,
+    #3b82f6 calc(var(--seek-fraction, 0) * 100%),
+    #3f3f46 calc(var(--seek-fraction, 0) * 100%),
+    #3f3f46 100%
+  );
+}
+.replay-seeker::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+.replay-seeker::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid #fff;
+  cursor: pointer;
+}
+
+/* ── Controls row ────────────────────────────────────────────── */
+.replay-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.75rem;
+}
+
+.replay-controls-left {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.replay-controls-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.replay-ctrl-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.35rem 0.65rem;
+  border: 1px solid #3f3f46;
+  border-radius: 6px;
+  background: transparent;
+  color: #e4e4e7;
+  font-size: 0.82rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.replay-ctrl-btn:hover {
+  background: #27272a;
+  border-color: #52525b;
+}
+
+/* ── Speed picker ────────────────────────────────────────────── */
+.replay-speed-wrapper {
+  position: relative;
+}
+
+.replay-speed-btn {
+  min-width: 3.2rem;
+  justify-content: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.replay-speed-menu {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  background: #1e1e22;
+  border: 1px solid #3f3f46;
+  border-radius: 8px;
+  padding: 0.25rem;
+  z-index: 20;
+  min-width: 5rem;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+}
+
+.replay-speed-option {
+  padding: 0.4rem 0.65rem;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: #a1a1aa;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.replay-speed-option:hover {
+  background: #27272a;
+  color: #e4e4e7;
+}
+
+.replay-speed-option.active {
+  color: #3b82f6;
+  font-weight: 600;
+}
+
+/* ── Fullscreen button ───────────────────────────────────────── */
+.replay-fullscreen-btn {
+  font-size: 1.05rem;
+  padding: 0.3rem 0.5rem;
+}
+
+/* ── Time ────────────────────────────────────────────────────── */
+.replay-time {
+  font-size: 0.85rem;
+  font-variant-numeric: tabular-nums;
+  color: #a1a1aa;
+  letter-spacing: 0.02em;
+}
