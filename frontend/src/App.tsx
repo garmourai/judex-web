@@ -25,6 +25,17 @@ function replayPath(snapshotId: string) {
   return `/replay/${encodeURIComponent(snapshotId)}`;
 }
 
+type SessionStatus = {
+  cameraPrepared: boolean;
+  preparingCamera: boolean;
+  captureActive: boolean;
+  startingCapture: boolean;
+  stoppingCapture: boolean;
+  trackId: string | null;
+  startedAt: string | null;
+  error: string | null;
+};
+
 export default function App() {
   const [pathname, setPathname] = useState(getPathname);
   const replayId = parseReplayId(pathname);
@@ -42,6 +53,14 @@ export default function App() {
     durationSec: number;
     segmentCount?: number;
   } | null>(null);
+
+  const [sessionStatus, setSessionStatus] = useState<SessionStatus>({
+    cameraPrepared: false, preparingCamera: false,
+    captureActive: false, startingCapture: false, stoppingCapture: false,
+    trackId: null, startedAt: null, error: null,
+  });
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [streamKey, setStreamKey] = useState(0);
 
   useEffect(() => {
     const onPopState = () => setPathname(getPathname());
@@ -94,8 +113,69 @@ export default function App() {
     };
   }, [replayId, API_BASE]);
 
+  useEffect(() => {
+    fetch(`${API_BASE}/api/session/status`)
+      .then((r) => r.json())
+      .then((data) => setSessionStatus(data))
+      .catch(() => {});
+  }, []);
+
+  const prepareCamera = useCallback(async () => {
+    setSessionError(null);
+    setSessionStatus((s) => ({ ...s, preparingCamera: true, error: null }));
+    try {
+      const res = await fetch(`${API_BASE}/api/session/prepare-camera`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'Failed to prepare camera');
+      setSessionStatus((s) => ({ ...s, cameraPrepared: true, preparingCamera: false, trackId: data.trackId, error: null }));
+      setStreamUrl(data.streamUrl ?? STREAM_URL);
+      setInputUrl(data.streamUrl ?? STREAM_URL);
+      setStreamKey((k) => k + 1);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setSessionError(msg);
+      setSessionStatus((s) => ({ ...s, preparingCamera: false, error: msg }));
+    }
+  }, []);
+
+  const startCapture = useCallback(async () => {
+    setSessionError(null);
+    setSessionStatus((s) => ({ ...s, startingCapture: true, error: null }));
+    try {
+      const res = await fetch(`${API_BASE}/api/session/start-capture`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'Failed to start capture');
+      setSessionStatus((s) => ({ ...s, captureActive: true, startingCapture: false, startedAt: data.startedAt, error: null }));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setSessionError(msg);
+      setSessionStatus((s) => ({ ...s, startingCapture: false, error: msg }));
+    }
+  }, []);
+
+  const stopCapture = useCallback(async () => {
+    setSessionError(null);
+    setSessionStatus((s) => ({ ...s, stoppingCapture: true, error: null }));
+    try {
+      const res = await fetch(`${API_BASE}/api/session/stop-capture`, { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error ?? 'Failed to stop capture');
+      setSessionStatus({
+        cameraPrepared: false, preparingCamera: false,
+        captureActive: false, startingCapture: false, stoppingCapture: false,
+        trackId: null, startedAt: null, error: null,
+      });
+      setStreamKey((k) => k + 1);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : 'Unknown error';
+      setSessionError(msg);
+      setSessionStatus((s) => ({ ...s, stoppingCapture: false, error: msg }));
+    }
+  }, []);
+
   const loadStream = useCallback(() => {
     setStreamUrl(inputUrl.trim() || STREAM_URL);
+    setStreamKey((k) => k + 1);
   }, [inputUrl]);
 
   const startReplay = useCallback(async () => {
@@ -157,6 +237,48 @@ export default function App() {
         <p className="subtitle">HLS · .ts transport stream playback</p>
       </header>
 
+      <div className="session-controls">
+        {sessionStatus.trackId && (
+          <div className="session-active">
+            <span className="session-indicator" />
+            <span>Track #{sessionStatus.trackId}{sessionStatus.captureActive ? ' · Capturing' : ' · Camera ready'}</span>
+          </div>
+        )}
+
+        <div className="session-buttons">
+          <button
+            type="button"
+            className="session-btn session-btn--prepare"
+            onClick={prepareCamera}
+            disabled={sessionStatus.preparingCamera || sessionStatus.cameraPrepared}
+          >
+            {sessionStatus.preparingCamera ? 'Preparing…' : sessionStatus.cameraPrepared ? 'Camera Ready' : 'Prepare Camera'}
+          </button>
+
+          <button
+            type="button"
+            className="session-btn session-btn--start"
+            onClick={startCapture}
+            disabled={!sessionStatus.cameraPrepared || sessionStatus.startingCapture || sessionStatus.captureActive}
+          >
+            {sessionStatus.startingCapture ? 'Starting…' : sessionStatus.captureActive ? 'Capture Running' : 'Start Capture'}
+          </button>
+
+          <button
+            type="button"
+            className="session-btn session-btn--stop"
+            onClick={stopCapture}
+            disabled={(!sessionStatus.captureActive && !sessionStatus.cameraPrepared) || sessionStatus.stoppingCapture}
+          >
+            {sessionStatus.stoppingCapture ? 'Stopping…' : 'Stop Capture'}
+          </button>
+        </div>
+
+        {(sessionError || sessionStatus.error) && (
+          <p className="error-text">{sessionError || sessionStatus.error}</p>
+        )}
+      </div>
+
       <div className="stream-url-bar">
         <input
           type="text"
@@ -188,7 +310,7 @@ export default function App() {
       {replayError && <p className="error-text">{replayError}</p>}
 
       <main className="player-container">
-        <StreamPlayer src={streamUrl} playbackMode="live" />
+        <StreamPlayer key={streamKey} src={streamUrl} playbackMode="live" />
       </main>
     </div>
   );

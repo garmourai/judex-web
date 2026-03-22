@@ -3,6 +3,10 @@ import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -16,6 +20,23 @@ const defaultStreamDir = path.join(__dirname, '..', 'stream-output');
 const streamDir = process.env.STREAM_DIR
   ? path.resolve(process.env.STREAM_DIR)
   : defaultStreamDir;
+
+const SOURCE_CODE_DIR = '/home/pi/source_code';
+const TS_SEGMENTS_DIR = path.join(SOURCE_CODE_DIR, 'ts_segments');
+const TRACK_INDEX_PATH = path.join(SOURCE_CODE_DIR, 'variable_files', 'track_video_index.json');
+
+let activeStreamDir = streamDir;
+
+let session = {
+  cameraPrepared: false,
+  preparingCamera: false,
+  captureActive: false,
+  startingCapture: false,
+  stoppingCapture: false,
+  trackId: null,
+  startedAt: null,
+  error: null,
+};
 
 // CORS for frontend (adjust origin in production)
 app.use(cors());
@@ -100,22 +121,22 @@ app.use('/stream/snapshots', (req, res, next) => {
   return next();
 });
 
-// Serve HLS (live: playlist must be re-fetched often; segments can be cached briefly)
-app.use('/stream', express.static(streamDir, {
-  setHeaders: (res, filePath) => {
-    if (filePath.endsWith('.m3u8')) {
-      res.set('Content-Type', 'application/vnd.apple.mpegurl');
-      // Critical for live: browsers/CDNs must not serve a stale playlist
-      res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-      res.set('Pragma', 'no-cache');
-    }
-    if (filePath.endsWith('.ts')) {
-      res.set('Content-Type', 'video/MP2T');
-      // Each segment file is immutable once written
-      res.set('Cache-Control', 'public, max-age=3600, immutable');
-    }
-  },
-}));
+// Serve HLS from the active stream directory (changes when a session starts)
+app.use('/stream', (req, res, next) => {
+  express.static(activeStreamDir, {
+    setHeaders: (res, filePath) => {
+      if (filePath.endsWith('.m3u8')) {
+        res.set('Content-Type', 'application/vnd.apple.mpegurl');
+        res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+        res.set('Pragma', 'no-cache');
+      }
+      if (filePath.endsWith('.ts')) {
+        res.set('Content-Type', 'video/MP2T');
+        res.set('Cache-Control', 'public, max-age=3600, immutable');
+      }
+    },
+  })(req, res, next);
+});
 
 // HLS playlist URL (frontend can use: /stream/playlist.m3u8)
 app.get('/api/stream-url', (_req, res) => {
@@ -133,7 +154,7 @@ app.post('/api/snapshots', async (req, res) => {
     const clampedMinutes = Math.min(Math.max(minutes, 1), 120);
     const targetSeconds = clampedMinutes * 60;
 
-    const livePlaylistPath = path.join(streamDir, 'playlist.m3u8');
+    const livePlaylistPath = path.join(activeStreamDir, 'playlist.m3u8');
     const content = await fs.readFile(livePlaylistPath, 'utf8');
     const { segments } = parseMediaPlaylist(content);
     if (!segments.length) {
@@ -151,7 +172,7 @@ app.post('/api/snapshots', async (req, res) => {
     const firstSequence = selected[0].sequence;
 
     const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const snapshotsDir = path.join(streamDir, 'snapshots');
+    const snapshotsDir = path.join(activeStreamDir, 'snapshots');
     await fs.mkdir(snapshotsDir, { recursive: true });
 
     const snapshotFilename = `${id}.m3u8`;
@@ -182,7 +203,7 @@ app.get('/api/snapshots/:id', async (req, res) => {
     if (!id || !/^[\w.-]+$/.test(id) || id.includes('..')) {
       return res.status(400).json({ error: 'Invalid snapshot id' });
     }
-    const snapshotPath = path.join(streamDir, 'snapshots', `${id}.m3u8`);
+    const snapshotPath = path.join(activeStreamDir, 'snapshots', `${id}.m3u8`);
     const content = await fs.readFile(snapshotPath, 'utf8');
     const { segments } = parseMediaPlaylist(content);
     const durationSec = segments.reduce((sum, s) => sum + s.duration, 0);
@@ -201,6 +222,130 @@ app.get('/api/snapshots/:id', async (req, res) => {
       details: error instanceof Error ? error.message : 'Unknown error',
     });
   }
+});
+
+async function readTrackIndex() {
+  const content = await fs.readFile(TRACK_INDEX_PATH, 'utf8');
+  return JSON.parse(content);
+}
+
+async function runScript(scriptPath) {
+  return execAsync(`bash "${scriptPath}"`, {
+    cwd: SOURCE_CODE_DIR,
+    timeout: 180_000,
+    env: { ...process.env, HOME: '/home/pi' },
+  });
+}
+
+app.post('/api/session/prepare-camera', async (_req, res) => {
+  if (session.preparingCamera) {
+    return res.status(409).json({ error: 'Camera is already being prepared.' });
+  }
+  if (session.cameraPrepared) {
+    return res.status(409).json({ error: 'Camera is already prepared.' });
+  }
+
+  session = { ...session, preparingCamera: true, error: null };
+
+  try {
+    await runScript(path.join(SOURCE_CODE_DIR, 'prepare_cameras.sh'));
+
+    await new Promise((r) => setTimeout(r, 2000));
+
+    const trackIndex = await readTrackIndex();
+    const trackId = String(trackIndex.counter);
+    const trackStreamDir = path.join(TS_SEGMENTS_DIR, trackId);
+
+    activeStreamDir = trackStreamDir;
+
+    session = {
+      ...session,
+      cameraPrepared: true,
+      preparingCamera: false,
+      trackId,
+      error: null,
+    };
+
+    return res.json({ trackId, streamUrl: '/stream/playlist.m3u8' });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    session = { ...session, preparingCamera: false, error: msg };
+    return res.status(500).json({ error: 'Failed to prepare camera.', details: msg });
+  }
+});
+
+app.post('/api/session/start-capture', async (_req, res) => {
+  if (!session.cameraPrepared) {
+    return res.status(400).json({ error: 'Camera must be prepared first.' });
+  }
+  if (session.startingCapture) {
+    return res.status(409).json({ error: 'Capture is already starting.' });
+  }
+  if (session.captureActive) {
+    return res.status(409).json({ error: 'Capture is already active.' });
+  }
+
+  session = { ...session, startingCapture: true, error: null };
+
+  try {
+    await runScript(path.join(SOURCE_CODE_DIR, 'start_capture.sh'));
+
+    session = {
+      ...session,
+      captureActive: true,
+      startingCapture: false,
+      startedAt: new Date().toISOString(),
+      error: null,
+    };
+
+    return res.json({
+      trackId: session.trackId,
+      streamUrl: '/stream/playlist.m3u8',
+      startedAt: session.startedAt,
+    });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    session = { ...session, startingCapture: false, error: msg };
+    return res.status(500).json({ error: 'Failed to start capture.', details: msg });
+  }
+});
+
+app.post('/api/session/stop-capture', async (_req, res) => {
+  if (session.stoppingCapture) {
+    return res.status(409).json({ error: 'Capture is already stopping.' });
+  }
+  if (!session.captureActive && !session.cameraPrepared) {
+    return res.status(400).json({ error: 'No active session to stop.' });
+  }
+
+  session = { ...session, stoppingCapture: true, error: null };
+
+  try {
+    await runScript(path.join(SOURCE_CODE_DIR, 'stop_capture.sh'));
+
+    activeStreamDir = streamDir;
+
+    session = {
+      cameraPrepared: false,
+      preparingCamera: false,
+      captureActive: false,
+      startingCapture: false,
+      stoppingCapture: false,
+      trackId: null,
+      startedAt: null,
+      error: null,
+    };
+
+    return res.json({ stopped: true });
+  } catch (error) {
+    const msg = error instanceof Error ? error.message : 'Unknown error';
+    session = { ...session, stoppingCapture: false, error: msg };
+    return res.status(500).json({ error: 'Failed to stop capture.', details: msg });
+  }
+});
+
+app.get('/api/session/status', (_req, res) => {
+  res.json(session);
 });
 
 app.get('/api/health', (_req, res) => {
