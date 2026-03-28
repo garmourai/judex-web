@@ -1,3 +1,4 @@
 # Directories (trailing / = directory only)
 backend/stream-output/
 pi_data/
+sync_reports/
