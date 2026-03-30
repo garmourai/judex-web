@@ -2,3 +2,5 @@
 backend/stream-output/
 pi_data/
 sync_reports/
+ts_segments_*/
+segments_*/
