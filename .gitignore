@@ -4,3 +4,8 @@ pi_data/
 sync_reports/
 ts_segments_*/
 segments_*/
+old_Badm*/
+cv_code/calib_data/
+*.pyc
+hello.txt
+Badminton_pipeline_3d-realtime.zip
