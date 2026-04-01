@@ -104,6 +104,12 @@ class TripletPipeline:
         print(f"[TripletPipeline]   Triplet CSV: {self._triplet_csv_path}")
         print(f"[TripletPipeline]   Chunk size : {self._chunk_size}")
         print(f"[TripletPipeline]   Pacing     : {self._pacing_seconds}s")
+        if self.config.triplet_source_index_min is not None or self.config.triplet_source_index_max is not None:
+            print(
+                f"[TripletPipeline]   Source_Index slice: "
+                f"[{self.config.triplet_source_index_min!s}, {self.config.triplet_source_index_max!s}] "
+                f"(inclusive; debug)"
+            )
         print(f"[TripletPipeline] {'='*60}")
 
         pipeline_start = time.time()
@@ -217,6 +223,8 @@ class TripletPipeline:
             chunk_size=self._chunk_size,
             pacing_seconds=self._pacing_seconds,
             csv_idle_timeout_seconds=self._csv_idle_timeout_seconds,
+            triplet_source_index_min=self.config.triplet_source_index_min,
+            triplet_source_index_max=self.config.triplet_source_index_max,
             profiler=self._profiler,
         )
         self._reader_thread = threading.Thread(

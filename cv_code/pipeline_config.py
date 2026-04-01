@@ -71,7 +71,12 @@ class PipelineConfig:
     # Original-resolution frame size for camera 1 (optional; else taken from OriginalFrameBuffer after first frame)
     camera_1_original_frame_width: Optional[int] = None
     camera_1_original_frame_height: Optional[int] = None
-    
+
+    # Triplet CSV debug slice: only process rows whose Source_Index is in [min, max] inclusive.
+    # Matches global Frame / dist_tracker.csv Frame column. None = no limit on that side.
+    triplet_source_index_min: Optional[int] = None
+    triplet_source_index_max: Optional[int] = None
+
     @property
     def start_frame(self) -> int:
         """Get the starting frame from start_end_frames."""

@@ -1462,29 +1462,54 @@ def correlation_worker(
                 _use_original_buffer = isinstance(staging_buffer_1, _OriginalFrameBuffer)
 
                 if _use_original_buffer:
-                    batch_num = max_common_frame // chunk_size
+                    # Reader batch_num is 0,1,2,... per triplet chunk — NOT max_frame // chunk_size.
+                    # Clear every reader batch whose max Source_Index is within this segment so
+                    # partial trailing chunks are kept until a later segment.
+                    end_frame_processed = segment[1]
                     orig_size_before = len(staging_buffer_1)
-                    clear_info = staging_buffer_1.clear_batch(batch_num)
+                    clear_infos: List[Tuple[int, Dict]] = []
+                    for bn in sorted(staging_buffer_1.get_batch_info().keys()):
+                        rng = staging_buffer_1.peek_batch_source_index_range(bn)
+                        if rng is None:
+                            continue
+                        _min_src, _max_src = rng
+                        if _max_src <= end_frame_processed:
+                            clear_infos.append((bn, staging_buffer_1.clear_batch(bn)))
                     orig_size_after = len(staging_buffer_1)
-                    print(
-                        f"[CorrelationWorker] Batch {correlation_batch}: original_buffer cleared "
-                        f"(batch={batch_num}, csv_rows={clear_info.get('min_csv_row_id')}..{clear_info.get('max_csv_row_id')}, "
-                        f"src_idx={clear_info.get('min_source_index')}..{clear_info.get('max_source_index')}, "
-                        f"sink_idx={clear_info.get('min_sink_index')}..{clear_info.get('max_sink_index')}, "
-                        f"count={clear_info.get('count')}, size {orig_size_before}->{orig_size_after})"
-                    )
-                    if profiler:
-                        profiler.record(
-                            "correlation_orig_buffer_cleared",
-                            float(orig_size_before - orig_size_after),
-                            write_immediately=True,
-                            batch=correlation_batch,
-                            metadata=(
-                                f"batch_cleared={batch_num},csv_rows={clear_info.get('min_csv_row_id')}..{clear_info.get('max_csv_row_id')},"
-                                f"src_idx={clear_info.get('min_source_index')}..{clear_info.get('max_source_index')},"
-                                f"sink_idx={clear_info.get('min_sink_index')}..{clear_info.get('max_sink_index')},"
-                                f"count={clear_info.get('count')},before={orig_size_before},after={orig_size_after}"
-                            ),
+                    if clear_infos:
+                        parts = []
+                        total_frames = 0
+                        for bn, ci in clear_infos:
+                            total_frames += int(ci.get("count") or 0)
+                            parts.append(
+                                f"reader_batch={bn}:src={ci.get('min_source_index')}..{ci.get('max_source_index')}"
+                                f",csv_rows={ci.get('min_csv_row_id')}..{ci.get('max_csv_row_id')},n={ci.get('count')}"
+                            )
+                        print(
+                            f"[CorrelationWorker] Batch {correlation_batch}: original_buffer cleared "
+                            f"{len(clear_infos)} reader batch(es) (segment end_frame={end_frame_processed}); "
+                            f"total_frames={total_frames}; " + "; ".join(parts) + f"; "
+                            f"total_size {orig_size_before}->{orig_size_after}",
+                            flush=True,
+                        )
+                        if profiler:
+                            profiler.record(
+                                "correlation_orig_buffer_cleared",
+                                float(orig_size_before - orig_size_after),
+                                write_immediately=True,
+                                batch=correlation_batch,
+                                metadata=(
+                                    f"segment_end_frame={end_frame_processed},reader_batches_cleared="
+                                    f"{[b for b, _ in clear_infos]},total_frames={total_frames},"
+                                    f"details={'; '.join(parts)},before={orig_size_before},after={orig_size_after}"
+                                ),
+                            )
+                    else:
+                        print(
+                            f"[CorrelationWorker] Batch {correlation_batch}: original_buffer — no reader batch "
+                            f"fully cleared (max Source_Index per batch still > segment end_frame={end_frame_processed}, "
+                            f"or buffer empty); size={orig_size_after}",
+                            flush=True,
                         )
                 else:
                     removed1, removed2 = _cleanup_staging_buffers_from_triangulation(
@@ -1565,11 +1590,6 @@ def correlation_worker(
         
         # Wait before next check
         time.sleep(check_interval)
-
-    if enable_visualization and not stop_event.is_set():
-        video_output_dir = os.path.join(output_dir, camera_1_id, "visualization_videos")
-        if os.path.isdir(video_output_dir):
-            _concatenate_visualization_videos(video_output_dir)
 
     print("[CorrelationWorker] 🛑 Correlation worker thread stopped")
 

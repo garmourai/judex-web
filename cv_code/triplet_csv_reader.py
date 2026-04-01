@@ -224,6 +224,20 @@ class OriginalFrameBuffer:
         with self._condition:
             return {k: len(v) for k, v in self._store.items()}
 
+    def peek_batch_source_index_range(self, batch_num: int) -> Optional[Tuple[int, int]]:
+        """
+        Return (min_source_index, max_source_index) for a reader batch without removing data.
+        Used by CorrelationWorker to decide which batches are fully covered by a processed
+        Frame segment (must not use max_frame // chunk_size — reader batch_num is not tied
+        to Source_Index that way).
+        """
+        with self._condition:
+            batch = self._store.get(batch_num)
+            if not batch:
+                return None
+            keys = list(batch.keys())
+            return min(keys), max(keys)
+
     def get_original_frame_size(self) -> Tuple[Optional[int], Optional[int]]:
         """Return (width, height) of camera-1 original frames; set after first add_frame."""
         with self._condition:
@@ -279,6 +293,8 @@ class TripletCSVReaderWorker:
         pacing_seconds: float = 3.2,
         poll_interval: float = 0.5,
         csv_idle_timeout_seconds: float = 15.0,
+        triplet_source_index_min: Optional[int] = None,
+        triplet_source_index_max: Optional[int] = None,
         profiler=None,
     ):
         self._triplet_csv_path = triplet_csv_path
@@ -300,6 +316,11 @@ class TripletCSVReaderWorker:
         self._pacing_seconds = pacing_seconds
         self._poll_interval = poll_interval
         self._csv_idle_timeout_seconds = csv_idle_timeout_seconds
+        self._triplet_source_index_min = triplet_source_index_min
+        self._triplet_source_index_max = triplet_source_index_max
+        self._source_index_slice_exhausted = False
+        self._slice_matched_row_count = 0
+        self._max_source_index_pushed: Optional[int] = None  # max Source_Index actually pushed (→ dist_tracker Frame)
         self._profiler = profiler
 
         # M3U8 segment readers (created in run())
@@ -316,6 +337,14 @@ class TripletCSVReaderWorker:
 
     def run(self) -> None:
         print(f"[TripletCSVReader] Starting — csv={self._triplet_csv_path}")
+        self._source_index_slice_exhausted = False
+        self._slice_matched_row_count = 0
+        if self._triplet_source_index_min is not None or self._triplet_source_index_max is not None:
+            print(
+                f"[TripletCSVReader] Source_Index slice (debug): "
+                f"[{self._triplet_source_index_min!s}, {self._triplet_source_index_max!s}] "
+                f"(inclusive; aligns with dist_tracker Frame column)"
+            )
 
         # Register cameras in TracknetBuffers
         self._tracknet_buffer_1.register_camera(self._camera_1_id)
@@ -359,8 +388,25 @@ class TripletCSVReaderWorker:
                         print(f"[TripletCSVReader] Batch {batch_num}: exiting — interrupted during csv poll")
                     break
                 if len(rows) == 0:
-                    # CSV signalled end-of-stream
-                    print(f"[TripletCSVReader] CSV end-of-stream reached after batch {batch_num - 1}")
+                    if self._source_index_slice_exhausted:
+                        print(
+                            "[TripletCSVReader] Source_Index slice complete — no more rows in range"
+                        )
+                    elif (
+                        self._triplet_source_index_min is not None
+                        or self._triplet_source_index_max is not None
+                    ):
+                        print(
+                            "[TripletCSVReader] No triplet rows matched Source_Index slice before "
+                            "end-of-file / idle (no frames pushed to inference). "
+                            "Correlation will see empty dist_tracker CSVs until range overlaps "
+                            "Source_Index values in the triplet CSV — widen min/max or set both to None.",
+                            flush=True,
+                        )
+                    else:
+                        print(
+                            f"[TripletCSVReader] CSV end-of-stream reached after batch {batch_num - 1}"
+                        )
                     break
 
                 is_partial_final = len(rows) < self._chunk_size
@@ -437,6 +483,23 @@ class TripletCSVReaderWorker:
 
         finally:
             # Always signal downstream that no more frames are coming
+            if (
+                self._triplet_source_index_min is not None
+                or self._triplet_source_index_max is not None
+            ) and self._slice_matched_row_count == 0:
+                print(
+                    "[TripletCSVReader] WARNING: Source_Index slice matched 0 rows in this run. "
+                    "Inference wrote no frames; dist_tracker CSVs stay empty. "
+                    "Widen triplet_source_index_min/max or set both to None; verify Source_Index "
+                    "in your triplet CSV.",
+                    flush=True,
+                )
+            if self._max_source_index_pushed is not None:
+                print(
+                    "[TripletCSVReader] Max Source_Index pushed to TracknetBuffers + OriginalFrameBuffer "
+                    f"(same as dist_tracker Frame column): {self._max_source_index_pushed}",
+                    flush=True,
+                )
             print(f"[TripletCSVReader] Signalling triplet_csv_reader_done_event")
             self._triplet_csv_reader_done_event.set()
             if self._csv_file is not None:
@@ -468,16 +531,23 @@ class TripletCSVReaderWorker:
 
     def _read_next_rows(self, n: int) -> Optional[List[TripletRow]]:
         """
-        Read up to n rows from triplet.csv, polling for new content.
+        Read up to n **matching** triplet rows from the CSV, polling for new content.
+
+        Rows outside ``triplet_source_index_min`` / ``triplet_source_index_max`` (by ``Source_Index``)
+        are skipped. After the first row with ``Source_Index`` above ``max``, the slice is
+        exhausted and subsequent calls return ``[]``.
 
         Returns:
             List[TripletRow] — up to n rows; may be shorter on EOF idle timeout or graceful stop.
             None only if force_stop_event is set (abandon read).
-            Empty list — no more rows (end of stream / idle timeout with nothing read this call).
+            Empty list — end of stream, idle timeout, or Source_Index slice exhausted.
         """
         if self._csv_file is None:
             if not self._open_csv():
                 return None
+
+        if self._source_index_slice_exhausted:
+            return []
 
         rows: List[TripletRow] = []
         last_non_empty_line_time = time.time()
@@ -511,7 +581,16 @@ class TripletCSVReaderWorker:
             row_dict = dict(zip(self._csv_header, parts))
             row = self._parse_row(row_dict)
             if row is not None:
+                si = row.source_index
+                if self._triplet_source_index_min is not None and si < self._triplet_source_index_min:
+                    # Still reading CSV; reset idle clock so we don't EOF-timeout while skipping low indices
+                    last_non_empty_line_time = time.time()
+                    continue
+                if self._triplet_source_index_max is not None and si > self._triplet_source_index_max:
+                    self._source_index_slice_exhausted = True
+                    return rows
                 rows.append(row)
+                self._slice_matched_row_count += 1
                 last_non_empty_line_time = time.time()
 
         return rows
@@ -615,10 +694,13 @@ class TripletCSVReaderWorker:
         We call wait_for_space() first to block until there is room.
 
         After all frames are pushed, call add_batch_info() for both cameras
-        so InferenceWorker knows how many frames are in this batch.
+        so InferenceWorker knows how many frames are in this batch. Counts only
+        full triplets (cam1 + cam2 + original) actually pushed — not len(matched)
+        when the loop stops early.
         """
         orig_width = self._source_reader.original_width
         orig_height = self._source_reader.original_height
+        pushed_triplets = 0
 
         for csv_row_id, row, cam1_orig, cam2_orig, cam1_resized, cam2_resized in matched:
             if self._stop_event.is_set():
