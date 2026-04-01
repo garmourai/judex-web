@@ -282,7 +282,19 @@ class TracknetBuffer:
         """Get current buffer size (thread-safe)."""
         with self._lock:
             return len(self.frames)
-    
+
+    def clear(self) -> None:
+        """Remove all frames and batch descriptors (e.g. force-stop / pipeline teardown)."""
+        with self._lock:
+            self.frames.clear()
+            self.camera_map.clear()
+            self._frame_count = 0
+            self._is_paused = False
+            for q in self._batch_queues.values():
+                q.clear()
+            self._not_full.notify_all()
+            self._batch_available.notify_all()
+
     def __repr__(self) -> str:
         stats = self.get_statistics()
         stats_str = ", ".join([f"{cam}: {count}" for cam, count in stats.items()])

@@ -124,9 +124,9 @@ def _write_stitched_frame(
     _draw_circles_with_labels(img1, pts_cam1, labels, color_bgr=(0, 255, 0))
     _draw_circles_with_labels(img2, pts_cam2, labels, color_bgr=(0, 255, 0))
     cv2.putText(img1, f"{camera_1_id} | fnwd={fnwd}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
     cv2.putText(img2, f"{camera_2_id} | fnwd={fnwd}", (10, 30),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2, cv2.LINE_AA)
+                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2, cv2.LINE_AA)
     stitched = np.hstack((img1, img2))
     writer.write(stitched)
 
@@ -142,11 +142,13 @@ def append_stitched_segment_to_video(
     fnwd_to_original_cam2: Dict[int, int],
     correlated_pairs_per_frame: Dict[int, List[Tuple[Tuple[float, float], Tuple[float, float]]]],
     writer_state: Optional[Dict[str, Any]] = None,
+    filename_suffix: str = "",
 ) -> int:
     """
-    Write one stitched MP4 per segment (batch): ``stitched_correlation_{s}_to_{e}.mp4``
+    Write one stitched MP4 per segment (batch): ``stitched_correlation_{s}_to_{e}{suffix}.mp4``
     under ``output_dir/stitched_correlation_videos/``. Each file is opened, filled, and
-    closed in this call (no single rolling output file).
+    closed in this call (no single rolling output file). Use ``filename_suffix="_nodetections"``
+    when there are no correlated 2D pairs for the segment.
 
     writer_state: optional, ignored (kept for API compatibility).
 
@@ -217,7 +219,8 @@ def append_stitched_segment_to_video(
         out_w = w1 + w2
         out_h = max(h1, h2)
         out_path = os.path.join(
-            video_subdir, f"stitched_correlation_{seg_s}_to_{seg_e}.mp4"
+            video_subdir,
+            f"stitched_correlation_{seg_s}_to_{seg_e}{filename_suffix}.mp4",
         )
         fourcc = cv2.VideoWriter_fourcc(*"mp4v")
         writer = cv2.VideoWriter(out_path, fourcc, out_fps, (out_w, out_h))

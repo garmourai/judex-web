@@ -446,22 +446,21 @@ def _create_visualization_from_triangulation(
                 pt_int = (int(pt_2d[0]), int(pt_2d[1]))
                 color = get_trajectory_color(traj_id)
 
-                # Draw filled circle with white outline
+                # Draw filled circle with black outline
                 cv2.circle(frame_img, pt_int, 8, color, -1)  # Filled circle
-                cv2.circle(frame_img, pt_int, 10, (255, 255, 255), 2)  # White outline
+                cv2.circle(frame_img, pt_int, 10, (0, 0, 0), 2)  # Black outline
 
                 # Step 3: Draw trajectory ID label (if enabled)
                 if show_trajectory_labels:
                     label = f"T{traj_id}"
                     label_pos = (pt_int[0] + 12, pt_int[1] - 5)
-                    # Draw text with background for readability
                     (text_w, text_h), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
                     cv2.rectangle(frame_img, 
                                  (label_pos[0] - 2, label_pos[1] - text_h - 2),
                                  (label_pos[0] + text_w + 2, label_pos[1] + 2),
-                                 (0, 0, 0), -1)  # Black background
+                                 (255, 255, 255), -1)
                     cv2.putText(frame_img, label, label_pos, 
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
 
                 trajectory_points_count += 1
                 frame_traj_points += 1
@@ -475,16 +474,15 @@ def _create_visualization_from_triangulation(
                 cv2.circle(frame_img, pt_int, 8, (0, 255, 0), 2)  # Green outline
         
         # ===== Draw FPS and frame info overlay =====
-        # Create semi-transparent overlay background
+        # Light semi-transparent patch so black HUD text stays readable
         overlay_height = 90
         overlay = frame_img.copy()
-        cv2.rectangle(overlay, (10, 10), (280, 10 + overlay_height), (0, 0, 0), -1)
-        cv2.addWeighted(overlay, 0.6, frame_img, 0.4, 0, frame_img)
+        cv2.rectangle(overlay, (10, 10), (280, 10 + overlay_height), (255, 255, 255), -1)
+        cv2.addWeighted(overlay, 0.55, frame_img, 0.45, 0, frame_img)
         
-        # Draw text info
-        text_color = (255, 255, 255)  # White
-        traj_color = (0, 255, 0)  # Green for trajectory points
-        removed_color = (128, 128, 128)  # Gray for removed points
+        text_color = (0, 0, 0)
+        traj_color = (0, 0, 0)
+        removed_color = (0, 0, 0)
         
         y_offset = 30
         line_height = 20
@@ -506,12 +504,12 @@ def _create_visualization_from_triangulation(
                    (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, text_color, 1)
         y_offset += line_height
         
-        # Line 3: Trajectory points (green)
+        # Line 3: Trajectory points
         cv2.putText(frame_img, f"Trajectory Points: {frame_traj_points}", 
                    (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, traj_color, 1)
         y_offset += line_height
         
-        # Line 4: Removed points (gray)
+        # Line 4: Removed points
         cv2.putText(frame_img, f"Removed Points: {frame_removed_points}", 
                    (20, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, removed_color, 1)
         
@@ -910,6 +908,7 @@ def correlation_worker(
         chunk_size: int = 96,  # Batch size for OriginalFrameBuffer clear_batch (judex pipeline)
         original_frame_width: Optional[int] = None,
         original_frame_height: Optional[int] = None,
+        force_stop_event: Optional[threading.Event] = None,
 ):
     """
     Worker thread that continuously monitors dist_tracker.csv files and performs
@@ -1152,6 +1151,14 @@ def correlation_worker(
             flush=True,
         )
         if last_segment_formation_time is not None:
+            if stop_event.is_set() or (
+                force_stop_event is not None and force_stop_event.is_set()
+            ):
+                print(
+                    "[CorrelationWorker] 🛑 Stop before segment processing — exiting",
+                    flush=True,
+                )
+                break
             correlation_start_time = time.time()
 
             do_pairwise_correlation_realtime(
@@ -1407,22 +1414,25 @@ def correlation_worker(
                             output_dir=output_dir,
                             frame_segments=[segment],
                         )
-
-                        if correlated_pairs:
-                            append_stitched_segment_to_video(
-                                frame_segments=[segment],
-                                output_dir=output_dir,
-                                camera_1_id=camera_1_id,
-                                camera_2_id=camera_2_id,
-                                staging_buffer_1=staging_buffer_1,
-                                staging_buffer_2=staging_buffer_2,
-                                fnwd_to_original_cam1=fnwd_to_original_cam1,
-                                fnwd_to_original_cam2=fnwd_to_original_cam2,
-                                correlated_pairs_per_frame=correlated_pairs,
-                            )
-                        else:
+                        stitched_suffix = (
+                            "_nodetections" if not correlated_pairs else ""
+                        )
+                        append_stitched_segment_to_video(
+                            frame_segments=[segment],
+                            output_dir=output_dir,
+                            camera_1_id=camera_1_id,
+                            camera_2_id=camera_2_id,
+                            staging_buffer_1=staging_buffer_1,
+                            staging_buffer_2=staging_buffer_2,
+                            fnwd_to_original_cam1=fnwd_to_original_cam1,
+                            fnwd_to_original_cam2=fnwd_to_original_cam2,
+                            correlated_pairs_per_frame=correlated_pairs,
+                            filename_suffix=stitched_suffix,
+                        )
+                        if not correlated_pairs:
                             print(
-                                "[CorrelationWorker]    ⚠️  No correlated pairs for stitched viz",
+                                "[CorrelationWorker]    ℹ️  Stitched viz (no detections): "
+                                f"filename suffix _nodetections, segment {segment[0]}-{segment[1]}",
                                 flush=True,
                             )
                     else:
@@ -1556,7 +1566,7 @@ def correlation_worker(
         # Wait before next check
         time.sleep(check_interval)
 
-    if enable_visualization:
+    if enable_visualization and not stop_event.is_set():
         video_output_dir = os.path.join(output_dir, camera_1_id, "visualization_videos")
         if os.path.isdir(video_output_dir):
             _concatenate_visualization_videos(video_output_dir)

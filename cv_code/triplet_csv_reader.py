@@ -10,7 +10,6 @@ Provides:
     and OriginalFrameBuffer (original res)
 """
 
-import csv
 import io
 import os
 import threading
@@ -233,6 +232,12 @@ class OriginalFrameBuffer:
             h, w = self._cam1_shape_hw
             return w, h
 
+    def clear_all(self) -> None:
+        """Drop all stored frames (e.g. force-stop)."""
+        with self._condition:
+            self._store.clear()
+            self._condition.notify_all()
+
 
 # ---------------------------------------------------------------------------
 # TripletCSVReaderWorker
@@ -266,12 +271,14 @@ class TripletCSVReaderWorker:
         tracknet_buffer_2: TracknetBuffer,
         original_buffer: OriginalFrameBuffer,
         stop_event: threading.Event,
-        tracknet_coordinator_done_event: threading.Event,
+        triplet_csv_reader_done_event: threading.Event,
+        force_stop_event: Optional[threading.Event] = None,
         camera_1_output_dir: str = "",
         camera_2_output_dir: str = "",
         chunk_size: int = 96,
         pacing_seconds: float = 3.2,
         poll_interval: float = 0.5,
+        csv_idle_timeout_seconds: float = 15.0,
         profiler=None,
     ):
         self._triplet_csv_path = triplet_csv_path
@@ -285,12 +292,14 @@ class TripletCSVReaderWorker:
         self._tracknet_buffer_2 = tracknet_buffer_2
         self._original_buffer = original_buffer
         self._stop_event = stop_event
-        self._tracknet_coordinator_done_event = tracknet_coordinator_done_event
+        self._triplet_csv_reader_done_event = triplet_csv_reader_done_event
+        self._force_stop_event = force_stop_event
         self._camera_1_output_dir = camera_1_output_dir
         self._camera_2_output_dir = camera_2_output_dir
         self._chunk_size = chunk_size
         self._pacing_seconds = pacing_seconds
         self._poll_interval = poll_interval
+        self._csv_idle_timeout_seconds = csv_idle_timeout_seconds
         self._profiler = profiler
 
         # M3U8 segment readers (created in run())
@@ -329,7 +338,9 @@ class TripletCSVReaderWorker:
         try:
             batch_num = 0
 
-            while not self._stop_event.is_set():
+            while not self._stop_event.is_set() and not (
+                self._force_stop_event is not None and self._force_stop_event.is_set()
+            ):
                 batch_start = time.time()
 
                 tb1_size = len(self._tracknet_buffer_1)
@@ -342,13 +353,17 @@ class TripletCSVReaderWorker:
                 csv_poll_elapsed = time.time() - csv_poll_start
 
                 if rows is None:
-                    # stop_event set during poll
-                    print(f"[TripletCSVReader] Batch {batch_num}: exiting — stop_event set during csv poll")
+                    if self._force_stop_event is not None and self._force_stop_event.is_set():
+                        print(f"[TripletCSVReader] Batch {batch_num}: exiting — force_stop (csv read)")
+                    else:
+                        print(f"[TripletCSVReader] Batch {batch_num}: exiting — interrupted during csv poll")
                     break
                 if len(rows) == 0:
                     # CSV signalled end-of-stream
                     print(f"[TripletCSVReader] CSV end-of-stream reached after batch {batch_num - 1}")
                     break
+
+                is_partial_final = len(rows) < self._chunk_size
 
                 # --- Prepare batch (read frames from .ts segments) ---
                 prepare_start = time.time()
@@ -358,7 +373,9 @@ class TripletCSVReaderWorker:
                 tb1_after = len(self._tracknet_buffer_1)
                 tb2_after = len(self._tracknet_buffer_2)
                 orig_after = len(self._original_buffer)
-                stop_after_prepare = self._stop_event.is_set()
+                stop_after_prepare = self._stop_event.is_set() or (
+                    self._force_stop_event is not None and self._force_stop_event.is_set()
+                )
                 if self._profiler:
                     self._profiler.record("reader_prepare_batch_time", prepare_elapsed,
                                           write_immediately=False, batch=batch_num, thread="TripletCSVReader",
@@ -366,7 +383,7 @@ class TripletCSVReaderWorker:
                                                    f"tb1={tb1_after},tb2={tb2_after},orig={orig_after}")
 
                 if stop_after_prepare:
-                    print(f"[TripletCSVReader] Batch {batch_num}: exiting — stop_event set after prepare")
+                    print(f"[TripletCSVReader] Batch {batch_num}: exiting — stop after prepare")
                     break
 
                 # --- Pacing wait (remaining time after prepare) ---
@@ -375,12 +392,16 @@ class TripletCSVReaderWorker:
                 if wait_time > 0:
                     pacing_start = time.time()
                     deadline = time.time() + wait_time
-                    while time.time() < deadline and not self._stop_event.is_set():
+                    while time.time() < deadline and not self._stop_event.is_set() and not (
+                        self._force_stop_event is not None and self._force_stop_event.is_set()
+                    ):
                         time.sleep(min(0.1, deadline - time.time()))
                     pacing_wait_elapsed = time.time() - pacing_start
 
-                if self._stop_event.is_set():
-                    print(f"[TripletCSVReader] Batch {batch_num}: exiting — stop_event set after pacing")
+                if self._stop_event.is_set() or (
+                    self._force_stop_event is not None and self._force_stop_event.is_set()
+                ):
+                    print(f"[TripletCSVReader] Batch {batch_num}: exiting — stop after pacing")
                     break
 
                 # --- Push batch to both buffers ---
@@ -402,18 +423,22 @@ class TripletCSVReaderWorker:
                     self._profiler.record("reader_complete_batch_time", batch_elapsed,
                                           write_immediately=True, batch=batch_num, thread="TripletCSVReader")
 
+                partial_tag = " [final partial]" if is_partial_final else ""
                 print(
-                    f"[TripletCSVReader] Batch {batch_num}: rows={len(rows)} matched={len(matched)} "
+                    f"[TripletCSVReader] Batch {batch_num}: rows={len(rows)} matched={len(matched)}{partial_tag} "
                     f"(csv_poll={csv_poll_elapsed:.2f}s, prepare={prepare_elapsed:.2f}s, "
                     f"pace={pacing_wait_elapsed:.2f}s, push={push_elapsed:.2f}s, total={batch_elapsed:.2f}s; "
                     f"tb1 {tb1_size}->{tb1_post}, tb2 {tb2_size}->{tb2_post}, orig {orig_size}->{orig_post})"
                 )
                 batch_num += 1
+                if is_partial_final:
+                    print("[TripletCSVReader] Final partial batch pushed — exiting reader loop")
+                    break
 
         finally:
             # Always signal downstream that no more frames are coming
-            print(f"[TripletCSVReader] Signalling tracknet_coordinator_done_event")
-            self._tracknet_coordinator_done_event.set()
+            print(f"[TripletCSVReader] Signalling triplet_csv_reader_done_event")
+            self._triplet_csv_reader_done_event.set()
             if self._csv_file is not None:
                 self._csv_file.close()
                 self._csv_file = None
@@ -443,30 +468,35 @@ class TripletCSVReaderWorker:
 
     def _read_next_rows(self, n: int) -> Optional[List[TripletRow]]:
         """
-        Read the next n rows from triplet.csv, polling for new content.
+        Read up to n rows from triplet.csv, polling for new content.
 
         Returns:
-            List[TripletRow] — exactly n rows (or fewer if EOF signalled),
-            None if stop_event was set while waiting.
-            Empty list signals end-of-stream (all CSV rows consumed).
+            List[TripletRow] — up to n rows; may be shorter on EOF idle timeout or graceful stop.
+            None only if force_stop_event is set (abandon read).
+            Empty list — no more rows (end of stream / idle timeout with nothing read this call).
         """
         if self._csv_file is None:
             if not self._open_csv():
                 return None
 
         rows: List[TripletRow] = []
-        csv_reader = csv.DictReader(
-            self._csv_file,
-            fieldnames=self._csv_header,
-        )
+        last_non_empty_line_time = time.time()
 
         while len(rows) < n:
-            if self._stop_event.is_set():
+            if self._force_stop_event is not None and self._force_stop_event.is_set():
                 return None
+            if self._stop_event.is_set():
+                return rows
 
             line = self._csv_file.readline()
             if not line:
-                # No new data yet — poll
+                now = time.time()
+                if self._stop_event.is_set():
+                    return rows
+                if self._force_stop_event is not None and self._force_stop_event.is_set():
+                    return None
+                if now - last_non_empty_line_time >= self._csv_idle_timeout_seconds:
+                    return rows
                 time.sleep(self._poll_interval)
                 continue
 
@@ -474,9 +504,6 @@ class TripletCSVReaderWorker:
             if not line:
                 continue
 
-            # Check for a sentinel / end-of-file marker if needed
-            # (Currently returns partial batch when file is truly done —
-            #  caller handles empty/short batches gracefully)
             parts = line.split(",")
             if len(parts) < len(self._csv_header):
                 continue
@@ -485,6 +512,7 @@ class TripletCSVReaderWorker:
             row = self._parse_row(row_dict)
             if row is not None:
                 rows.append(row)
+                last_non_empty_line_time = time.time()
 
         return rows
 

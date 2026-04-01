@@ -17,7 +17,8 @@ def inference_worker(
     staging_buffer_1=None,
     staging_buffer_2=None,
     inference_done_event: Optional[threading.Event] = None,
-    tracknet_coordinator_done_event: Optional[threading.Event] = None,
+    triplet_csv_reader_done_event: Optional[threading.Event] = None,
+    force_stop_event: Optional[threading.Event] = None,
 ):
     """
     Worker thread for running inference.
@@ -71,7 +72,10 @@ def inference_worker(
         """Sleep without profiling (sleep time is now captured in wait_for_batch_time)."""
         time.sleep(duration_s)
     
-    while not stop_event.is_set():
+    def _force_stop() -> bool:
+        return force_stop_event is not None and force_stop_event.is_set()
+
+    while not stop_event.is_set() and not _force_stop():
         # Select the correct tracknet buffer based on expected camera
         if expected_camera == inference.camera_1_id:
             current_buffer = tracknet_buffer_1
@@ -96,7 +100,7 @@ def inference_worker(
         # This allows us to check exit conditions more frequently
         batch_info = None
         POLL_INTERVAL = 0.1  # Check every 0.1 seconds
-        while batch_info is None and not stop_event.is_set():
+        while batch_info is None and not stop_event.is_set() and not _force_stop():
             # Try to get batch with short timeout
             batch_info = current_buffer.wait_for_next_batch(
                 expected_camera,
@@ -108,14 +112,16 @@ def inference_worker(
                 break
             
             # No batch yet - check if we should exit while waiting
-            # Check if tracknet coordinator is done and buffers are empty
-            if tracknet_coordinator_done_event is not None and tracknet_coordinator_done_event.is_set():
+            # Triplet CSV reader finished and buffers drained
+            if triplet_csv_reader_done_event is not None and triplet_csv_reader_done_event.is_set():
                 if len(tracknet_buffer_1) == 0 and len(tracknet_buffer_2) == 0:
-                    # Coordinator done and buffers empty - exit
                     break
             
             # Continue polling (will sleep POLL_INTERVAL in wait_for_next_batch)
-        
+
+        if _force_stop():
+            break
+
         if batch_info is not None:
             frames_in_batch, batch_meta = batch_info
             # Ensure the frames are actually present in the buffer (coordinator promises this).
@@ -261,21 +267,22 @@ def inference_worker(
                         print(f"[InferenceWorker] ⏳ Inference waiting for initial frames... (waited {time_since_start:.1f}s, will wait up to {INITIAL_WAIT_TIMEOUT}s)")
                     _profile_inference_sleep(0.1, reason="waiting_initial_frames", expected_cam=expected_camera)
                     continue
-                # If we've processed frames before and buffer is empty, check if tracknet coordinator is done
+                # If we've processed frames before and buffer is empty, check triplet reader / force stop
                 elif has_processed_any_frames:
-                    # Primary exit: Check if tracknet coordinator is done AND both buffers are empty
-                    if tracknet_coordinator_done_event is not None and tracknet_coordinator_done_event.is_set():
+                    if _force_stop():
+                        print("[InferenceWorker] 🛑 Force stop — exiting inference worker")
+                        break
+                    # Primary exit: triplet CSV reader done AND both buffers are empty
+                    if triplet_csv_reader_done_event is not None and triplet_csv_reader_done_event.is_set():
                         if len(tracknet_buffer_1) == 0 and len(tracknet_buffer_2) == 0:
-                            # TrackNet coordinator done and both buffers empty - all frames processed, safe to exit
-                            print("[InferenceWorker] ✅ No more frames to process (tracknet coordinator done and both buffers empty)")
+                            print(
+                                "[InferenceWorker] ✅ No more frames to process "
+                                "(triplet CSV reader done and both buffers empty)"
+                            )
                             break
-                        else:
-                            # TrackNet coordinator done but buffers still have frames - continue processing
-                            continue
-                    else:
-                        # Buffer empty but tracknet coordinator still active - wait for more frames
-                        _profile_inference_sleep(0.1, reason="buffer_empty_waiting_for_coordinator", expected_cam=expected_camera)
                         continue
+                    _profile_inference_sleep(0.1, reason="buffer_empty_waiting_for_reader", expected_cam=expected_camera)
+                    continue
                 else:
                     # Never processed frames and timeout reached
                     print(f"[InferenceWorker] ⚠️  No frames received after {INITIAL_WAIT_TIMEOUT}s, exiting inference worker")

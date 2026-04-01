@@ -53,6 +53,7 @@ class TripletPipeline:
         enable_visualization: bool = False,
         enable_stitched_visualization: bool = False,
         profiler=None,
+        csv_idle_timeout_seconds: float = 15.0,
     ):
         self._triplet_csv_path = triplet_csv_path
         self._source_segments_dir = source_segments_dir
@@ -65,6 +66,7 @@ class TripletPipeline:
         self._enable_visualization = enable_visualization
         self._enable_stitched_visualization = enable_stitched_visualization
         self._profiler = profiler
+        self._csv_idle_timeout_seconds = csv_idle_timeout_seconds
 
         # Shared buffers
         self._tracknet_buffer_1: Optional[TracknetBuffer] = None
@@ -73,8 +75,10 @@ class TripletPipeline:
 
         # Threading events
         self._stop_event = threading.Event()
-        self._tracknet_coordinator_done_event = threading.Event()
+        self._triplet_csv_reader_done_event = threading.Event()
         self._inference_done_event = threading.Event()
+        self._force_stop_event = threading.Event()
+        self._sigint_press_count = 0
 
         # Threads
         self._reader_thread: Optional[threading.Thread] = None
@@ -104,14 +108,26 @@ class TripletPipeline:
 
         pipeline_start = time.time()
 
-        # Register SIGINT handler for clean shutdown
+        # Register SIGINT: 1st = graceful (stop_event only); 2nd = force_stop + buffer clear
         original_sigint = signal.getsignal(signal.SIGINT)
         def _handle_sigint(sig, frame):
-            print("\n[TripletPipeline] Ctrl+C received — stopping all threads...")
-            self._stop_event.set()
-            # Unblock any threads waiting on these events
-            self._tracknet_coordinator_done_event.set()
-            self._inference_done_event.set()
+            self._sigint_press_count += 1
+            if self._sigint_press_count == 1:
+                print(
+                    "\n[TripletPipeline] Ctrl+C — graceful stop (flush partial triplet rows, then shutdown)...",
+                    flush=True,
+                )
+                self._stop_event.set()
+            else:
+                print("\n[TripletPipeline] Ctrl+C — force stop (clearing buffers)...", flush=True)
+                self._force_stop_event.set()
+                self._stop_event.set()
+                if self._tracknet_buffer_1 is not None:
+                    self._tracknet_buffer_1.clear()
+                if self._tracknet_buffer_2 is not None:
+                    self._tracknet_buffer_2.clear()
+                if self._original_buffer is not None:
+                    self._original_buffer.clear_all()
         signal.signal(signal.SIGINT, _handle_sigint)
 
         try:
@@ -133,9 +149,11 @@ class TripletPipeline:
             )
 
             # Reset events
+            self._sigint_press_count = 0
             self._stop_event.clear()
-            self._tracknet_coordinator_done_event.clear()
+            self._triplet_csv_reader_done_event.clear()
             self._inference_done_event.clear()
+            self._force_stop_event.clear()
 
             # Start threads
             self._start_threads()
@@ -149,6 +167,11 @@ class TripletPipeline:
             ):
                 if thread:
                     thread.join()
+
+            self._tracknet_buffer_1 = None
+            self._tracknet_buffer_2 = None
+            self._original_buffer = None
+            self._inference = None
 
             print("[TripletPipeline] All worker threads joined.", flush=True)
             if self._profiler:
@@ -187,11 +210,13 @@ class TripletPipeline:
             tracknet_buffer_2=self._tracknet_buffer_2,
             original_buffer=self._original_buffer,
             stop_event=self._stop_event,
-            tracknet_coordinator_done_event=self._tracknet_coordinator_done_event,
+            triplet_csv_reader_done_event=self._triplet_csv_reader_done_event,
+            force_stop_event=self._force_stop_event,
             camera_1_output_dir=self.config.camera_1_output_dir,
             camera_2_output_dir=self.config.camera_2_output_dir,
             chunk_size=self._chunk_size,
             pacing_seconds=self._pacing_seconds,
+            csv_idle_timeout_seconds=self._csv_idle_timeout_seconds,
             profiler=self._profiler,
         )
         self._reader_thread = threading.Thread(
@@ -212,7 +237,8 @@ class TripletPipeline:
                 self._original_buffer,   # staging_buffer_1 (passed through to process_camera_batch)
                 None,                    # staging_buffer_2
                 self._inference_done_event,
-                self._tracknet_coordinator_done_event,
+                self._triplet_csv_reader_done_event,
+                self._force_stop_event,
             ),
             daemon=False,
             name="InferenceWorker",
@@ -246,6 +272,7 @@ class TripletPipeline:
                     "chunk_size": self._chunk_size,
                     "original_frame_width": self.config.camera_1_original_frame_width,
                     "original_frame_height": self.config.camera_1_original_frame_height,
+                    "force_stop_event": self._force_stop_event,
                 },
                 daemon=False,
                 name="CorrelationWorker",
@@ -276,6 +303,7 @@ def run_triplet_pipeline(
     enable_visualization: bool = False,
     enable_stitched_visualization: bool = False,
     profiler=None,
+    csv_idle_timeout_seconds: float = 15.0,
 ) -> bool:
     """Convenience wrapper: create and run a TripletPipeline."""
     pipeline = TripletPipeline(
@@ -290,5 +318,6 @@ def run_triplet_pipeline(
         enable_visualization=enable_visualization,
         enable_stitched_visualization=enable_stitched_visualization,
         profiler=profiler,
+        csv_idle_timeout_seconds=csv_idle_timeout_seconds,
     )
     return pipeline.run()
