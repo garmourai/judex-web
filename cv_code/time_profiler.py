@@ -118,6 +118,7 @@ class TimeProfiler:
                 f.write(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
                 f.write("=" * 80 + "\n\n")
                 f.write("BATCH-BY-BATCH TIMINGS\n")
+                f.write("(Correlation batches also get a CORRELATION SEGMENT BREAKDOWN block with summed parts.)\n")
                 f.write("-" * 80 + "\n")
                 f.write(f"{'Batch':<8} {'Thread':<18} {'Operation':<35} {'Duration (s)':<15} {'Timestamp':<20}\n")
                 f.write("-" * 80 + "\n")
@@ -180,6 +181,58 @@ class TimeProfiler:
             print(f"⚠️  Warning: Failed to write profiling entry to {self._filepath}: {e}")
             import traceback
             traceback.print_exc()
+
+    def write_correlation_segment_breakdown(
+        self,
+        batch: int,
+        seg_meta: str,
+        t_wait_ready: float,
+        t_pairwise: float,
+        t_trajectory: float,
+        t_viz_overlay: float,
+        t_viz_stitched: float,
+        t_accounted: float,
+        t_overhead: float,
+        t_wall: float,
+    ) -> None:
+        """
+        Append a readable block to the profiling file matching console segment timing.
+        wait = idle before this segment; pairwise + trajectory + viz + viz_stitched = accounted;
+        + overhead ≈ wall.
+        """
+        if not self._filepath:
+            return
+        try:
+            self._ensure_file_initialized()
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            chk = t_accounted + t_overhead
+            lines = [
+                "\n",
+                "=" * 80 + "\n",
+                f"CORRELATION SEGMENT BREAKDOWN  batch={batch}  {ts}\n",
+                f"  {seg_meta}\n",
+                "-" * 80 + "\n",
+                f"  wait before segment      (correlation_wait_for_ready_s)      {t_wait_ready:10.4f} s\n",
+                f"  pairwise+triangulation   (correlation_segment_pairwise_s)    {t_pairwise:10.4f} s\n",
+                f"  trajectory               (correlation_segment_trajectory_s)    {t_trajectory:10.4f} s\n",
+                f"  viz cam1 overlay         (correlation_segment_viz_overlay_s)   {t_viz_overlay:10.4f} s\n",
+                f"  viz stitched             (correlation_segment_viz_stitched_s)  {t_viz_stitched:10.4f} s\n",
+                "-" * 80 + "\n",
+                f"  accounted sum            (correlation_segment_accounted_s)     {t_accounted:10.4f} s\n",
+                f"  overhead                 (correlation_segment_overhead_s)      {t_overhead:10.4f} s\n",
+                f"  wall (full segment)      (correlation_complete_segment_time) {t_wall:10.4f} s\n",
+                f"  check (accounted+overhead)                                      {chk:10.4f} s\n",
+                "=" * 80 + "\n",
+            ]
+            with open(self._filepath, "a") as f:
+                f.writelines(lines)
+                f.flush()
+                try:
+                    os.fsync(f.fileno())
+                except OSError:
+                    pass
+        except Exception as e:
+            print(f"⚠️  Warning: Failed to write correlation segment breakdown: {e}")
     
     def record_batch_complete(self, batch_type: str = "inference"):
         """Record that a batch is complete and increment batch counter."""
@@ -253,6 +306,31 @@ class TimeProfiler:
                     f.write(f"  Min Time: {stats['min']:.4f} seconds\n")
                     f.write(f"  Max Time: {stats['max']:.4f} seconds\n")
                     f.write("\n")
+
+            corr_ops = [
+                "correlation_wait_for_ready_s",
+                "correlation_segment_pairwise_s",
+                "correlation_segment_trajectory_s",
+                "correlation_segment_viz_overlay_s",
+                "correlation_segment_viz_stitched_s",
+                "correlation_segment_accounted_s",
+                "correlation_segment_overhead_s",
+                "correlation_complete_segment_time",
+            ]
+            f.write("CORRELATION SEGMENT TIMING (totals across all correlation batches)\n")
+            f.write("-" * 80 + "\n")
+            f.write(
+                "correlation_wait_for_ready_s = idle (poll/sleep) after previous segment until this one starts. "
+                "accounted = pairwise+trajectory+viz_overlay+viz_stitched; wall = segment work only.\n"
+            )
+            for op in corr_ops:
+                st = all_stats.get(op)
+                if st and st["count"] > 0:
+                    f.write(
+                        f"  {op:<40} count={st['count']:<6} "
+                        f"total={st['total']:.4f}s  mean={st['mean']:.4f}s\n"
+                    )
+            f.write("-" * 80 + "\n\n")
 
             f.write("=" * 80 + "\n")
             f.write(f"Profiling completed at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
