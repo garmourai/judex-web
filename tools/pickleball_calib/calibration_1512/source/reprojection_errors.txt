@@ -1,0 +1,9 @@
+point_1: 4.074775
+point_2: 8.396706
+point_3: 16.260558
+point_4: 8.021149
+point_5: 2.568706
+point_6: 0.124205
+point_7: 7.664302
+mean_error: 6.730057
+api_reprojection_error: 5.862763

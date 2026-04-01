@@ -2,10 +2,63 @@
   "calibration_type": "pinhole",
   "is_fisheye": false,
   "chessboard": {
-    "internal_corners": [6, 8],
+    "internal_corners": [
+      6,
+      8
+    ],
     "square_size_mm": 25
   },
-  "notes": "Sink images for calibration (extracted frames go here)"
-  ,
-  "checkerboard_path": "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/3.6mm_checkerboard"
+  "notes": "Sink images for calibration (extracted frames go here)",
+  "checkerboard_path": "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/3.6mm_checkerboard",
+  "extrinsic_marked_points": [
+    {
+      "world_name": "p1",
+      "image_x": 470.0,
+      "image_y": 143.00000000000006,
+      "canvas_x": 182.77777777777777,
+      "canvas_y": 55.61111111111113
+    },
+    {
+      "world_name": "p3",
+      "image_x": 875.0,
+      "image_y": 108.00000000000003,
+      "canvas_x": 340.27777777777777,
+      "canvas_y": 42.00000000000001
+    },
+    {
+      "world_name": "p7",
+      "image_x": 328.0,
+      "image_y": 415.0,
+      "canvas_x": 127.55555555555556,
+      "canvas_y": 161.38888888888889
+    },
+    {
+      "world_name": "p9",
+      "image_x": 1121.0000000000002,
+      "image_y": 339.00000000000006,
+      "canvas_x": 435.9444444444445,
+      "canvas_y": 131.83333333333334
+    },
+    {
+      "world_name": "p11",
+      "image_x": 858.0000000000002,
+      "image_y": 917.0000000000001,
+      "canvas_x": 333.66666666666674,
+      "canvas_y": 356.61111111111114
+    },
+    {
+      "world_name": "p15",
+      "image_x": 348.00000000000006,
+      "image_y": 218.00000000000003,
+      "canvas_x": 135.33333333333334,
+      "canvas_y": 84.77777777777779
+    },
+    {
+      "world_name": "p16",
+      "image_x": 1047.0,
+      "image_y": 156.0,
+      "canvas_x": 407.16666666666663,
+      "canvas_y": 60.666666666666664
+    }
+  ]
 }

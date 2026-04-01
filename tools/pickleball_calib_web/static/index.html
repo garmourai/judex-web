@@ -488,6 +488,7 @@
         let config = {};
         let currentExtrinsicImage = null;
         let markedPoints = [];
+        let currentImageMode = 'raw';
         const canvasWidth = 1200;
         const canvasHeight = 800;
 
@@ -499,7 +500,7 @@
                 console.log('Config loaded:', config);
                 
                 populateWorldPointSelect();
-                loadExtrinsicImage('source');
+                loadExtrinsicImage('source').catch(err => console.error(err));
                 updateIntrinsicInfo();
             } catch (error) {
                 console.error('Error loading config:', error);
@@ -597,18 +598,19 @@
         }
 
         async function loadExtrinsicImage(folder) {
-            try {
-                const response = await fetch(`/api/image/${folder}`);
-                const data = await response.json();
+            const response = await fetch(`/api/image/${folder}?undistort=1`);
+            const data = await response.json();
+            await new Promise((resolve, reject) => {
                 const img = new Image();
                 img.onload = () => {
                     currentExtrinsicImage = img;
+                    currentImageMode = data.image_kind || 'raw';
                     drawExtrinsicCanvas();
+                    resolve();
                 };
+                img.onerror = () => reject(new Error('Failed to load extrinsic image'));
                 img.src = data.image;
-            } catch (error) {
-                console.error('Error loading image:', error);
-            }
+            });
         }
 
         function drawExtrinsicCanvas() {
@@ -631,6 +633,10 @@
                 newHeight = maxHeight;
                 newWidth = newHeight * imgAspect;
             }
+
+            // Prevent zero-sized canvas during layout timing edge cases.
+            newWidth = Math.max(1, Math.round(newWidth));
+            newHeight = Math.max(1, Math.round(newHeight));
             
             canvas.width = newWidth;
             canvas.height = newHeight;
@@ -765,6 +771,8 @@
             try {
                 // First save marked points to JSON
                 const canvas = document.getElementById('extrinsic-canvas');
+                const safeCanvasWidth = canvas.width || (currentExtrinsicImage?.width ?? 1);
+                const safeCanvasHeight = canvas.height || (currentExtrinsicImage?.height ?? 1);
                 await saveMarkedPointsToJSON(folder, canvas.width, canvas.height);
                 
                 // Then compute extrinsic
@@ -773,7 +781,10 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         folder: folder,
-                        points: markedPoints
+                        points: markedPoints,
+                        canvas_width: safeCanvasWidth,
+                        canvas_height: safeCanvasHeight,
+                        image_mode: currentImageMode
                     })
                 });
                 
@@ -821,22 +832,39 @@
             const folder = document.getElementById('extrinsic-folder').value;
             
             try {
+                await loadExtrinsicImage(folder);
                 const response = await fetch(`/api/extrinsic/load-marked-points?folder=${folder}`);
                 const result = await response.json();
                 
                 if (result.success && result.points.length > 0) {
-                    // Load points from JSON (using canvas coordinates for display)
-                    markedPoints = result.points.map(p => ({
-                        world_name: p.world_name,
-                        image_x: p.canvas_x || p.image_x,
-                        image_y: p.canvas_y || p.image_y
-                    }));
-                    
+                    const origW = currentExtrinsicImage.width;
+                    const origH = currentExtrinsicImage.height;
+                    const canvas = document.getElementById('extrinsic-canvas');
+                    const cw = canvas.width;
+                    const ch = canvas.height;
+                    // JSON image_x/image_y = original image pixel space; map to current canvas for display.
+                    markedPoints = result.points.map(p => {
+                        let imgPx, imgPy;
+                        if (typeof p.image_x === 'number' && typeof p.image_y === 'number') {
+                            imgPx = p.image_x;
+                            imgPy = p.image_y;
+                        } else {
+                            imgPx = (p.canvas_x ?? 0) * (origW / cw);
+                            imgPy = (p.canvas_y ?? 0) * (origH / ch);
+                        }
+                        const canvasX = (imgPx / origW) * cw;
+                        const canvasY = (imgPy / origH) * ch;
+                        return {
+                            world_name: p.world_name,
+                            image_x: canvasX,
+                            image_y: canvasY
+                        };
+                    });
                     updateMarkedPointsList();
                     drawExtrinsicCanvas();
-                    
+                    await saveMarkedPointsToJSON(folder, canvas.width, canvas.height);
                     showStatus('extrinsic', 
-                        `✅ Loaded ${result.count} points from config.json`, 
+                        `✅ Loaded ${result.count} points; canvas coords synced from image_x/image_y`, 
                         'success');
                 } else {
                     showStatus('extrinsic', '⚠️ No marked points found in config.json', 'warning');
@@ -895,7 +923,7 @@
         // Load extrinsic image when folder changes
         document.addEventListener('DOMContentLoaded', () => {
             document.getElementById('extrinsic-folder')?.addEventListener('change', (e) => {
-                loadExtrinsicImage(e.target.value);
+                loadExtrinsicImage(e.target.value).catch(err => console.error(err));
                 resetExtrinsicPoints();
             });
         });

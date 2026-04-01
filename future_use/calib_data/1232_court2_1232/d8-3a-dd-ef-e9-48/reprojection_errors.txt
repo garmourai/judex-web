@@ -1,0 +1,79 @@
+Calibration Type: standard
+Camera: d8-3a-dd-ef-e9-48
+Center: Game Theory Indranagar
+Date: 2025-07-15 12:28:05
+Mean Reprojection Error: 0.061692 pixels
+Successful Detections: 67
+Failed Detections: 3
+
+Individual Image Reprojection Errors:
+------------------------------------------------------------
+Image File                              Error (pixels)
+------------------------------------------------------------
+chessboard_20250714_113414_000.jpg      0.297996
+chessboard_20250714_113411_714.jpg      0.296050
+chessboard_20250714_113412_649.jpg      0.286209
+chessboard_20250714_113414_536.jpg      0.227944
+chessboard_20250714_113419_185.jpg      0.218090
+chessboard_20250714_113417_906.jpg      0.215302
+chessboard_20250714_113412_339.jpg      0.209009
+chessboard_20250714_113411_481.jpg      0.195086
+chessboard_20250714_113418_558.jpg      0.193161
+chessboard_20250714_113409_909.jpg      0.106827
+chessboard_20250714_113410_771.jpg      0.098821
+chessboard_20250714_113417_983.jpg      0.081946
+chessboard_20250714_113414_630.jpg      0.057061
+chessboard_20250714_113414_316.jpg      0.042952
+chessboard_20250714_113418_921.jpg      0.042685
+chessboard_20250714_113418_609.jpg      0.039940
+chessboard_20250714_113410_143.jpg      0.039235
+chessboard_20250714_113417_669.jpg      0.038488
+chessboard_20250714_113416_413.jpg      0.038445
+chessboard_20250714_113416_232.jpg      0.037920
+chessboard_20250714_113410_459.jpg      0.035172
+chessboard_20250714_113416_103.jpg      0.034548
+chessboard_20250714_113414_222.jpg      0.034069
+chessboard_20250714_113413_911.jpg      0.033283
+chessboard_20250714_113409_286.jpg      0.032970
+chessboard_20250714_113415_168.jpg      0.032899
+chessboard_20250714_113414_941.jpg      0.032861
+chessboard_20250714_113409_202.jpg      0.032677
+chessboard_20250714_113418_870.jpg      0.032465
+chessboard_20250714_113410_538.jpg      0.032158
+chessboard_20250714_113411_081.jpg      0.032084
+chessboard_20250714_113409_521.jpg      0.031823
+chessboard_20250714_113416_725.jpg      0.031503
+chessboard_20250714_113411_169.jpg      0.031443
+chessboard_20250714_113413_370.jpg      0.031137
+chessboard_20250714_113412_962.jpg      0.030920
+chessboard_20250714_113410_223.jpg      0.030905
+chessboard_20250714_113408_651.jpg      0.030579
+chessboard_20250714_113413_056.jpg      0.030277
+chessboard_20250714_113408_970.jpg      0.030132
+chessboard_20250714_113413_286.jpg      0.030105
+chessboard_20250714_113418_247.jpg      0.029733
+chessboard_20250714_113413_599.jpg      0.029587
+chessboard_20250714_113409_599.jpg      0.029390
+chessboard_20250714_113408_890.jpg      0.029255
+chessboard_20250714_113414_848.jpg      0.028766
+chessboard_20250714_113411_393.jpg      0.028536
+chessboard_20250714_113417_037.jpg      0.028458
+chessboard_20250714_113416_865.jpg      0.028203
+chessboard_20250714_113410_857.jpg      0.028184
+chessboard_20250714_113412_743.jpg      0.028037
+chessboard_20250714_113412_106.jpg      0.027792
+chessboard_20250714_113413_685.jpg      0.027605
+chessboard_20250714_113412_026.jpg      0.027588
+chessboard_20250714_113415_481.jpg      0.027534
+chessboard_20250714_113418_296.jpg      0.026589
+chessboard_20250714_113412_428.jpg      0.026571
+chessboard_20250714_113417_356.jpg      0.025995
+chessboard_20250714_113409_831.jpg      0.025463
+chessboard_20250714_113411_796.jpg      0.025383
+chessboard_20250714_113417_261.jpg      0.024525
+chessboard_20250714_113415_253.jpg      0.024520
+chessboard_20250714_113416_548.jpg      0.024385
+chessboard_20250714_113415_922.jpg      0.024330
+chessboard_20250714_113415_609.jpg      0.024309
+chessboard_20250714_113417_588.jpg      0.023328
+chessboard_20250714_113415_792.jpg      0.022122

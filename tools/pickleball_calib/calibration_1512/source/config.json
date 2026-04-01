@@ -13,52 +13,52 @@
   "extrinsic_marked_points": [
     {
       "world_name": "p1",
-      "image_x": 10,
-      "image_y": 10,
-      "canvas_x": 10,
-      "canvas_y": 10
+      "image_x": 537.0000000000001,
+      "image_y": 110.00000000000001,
+      "canvas_x": 208.83333333333337,
+      "canvas_y": 42.77777777777778
     },
     {
-      "world_name": "p5",
-      "image_x": 545.1428571428572,
-      "image_y": 313.7142857142857,
-      "canvas_x": 212.0,
-      "canvas_y": 122.0
+      "world_name": "p3",
+      "image_x": 939.0000000000002,
+      "image_y": 96.00000000000007,
+      "canvas_x": 365.16666666666674,
+      "canvas_y": 37.33333333333336
     },
     {
-      "world_name": "p4",
-      "image_x": 905.1428571428572,
-      "image_y": 46.28571428571429,
-      "canvas_x": 352.0,
-      "canvas_y": 18.0
+      "world_name": "p7",
+      "image_x": 324.0,
+      "image_y": 357.00000000000006,
+      "canvas_x": 126.0,
+      "canvas_y": 138.83333333333334
+    },
+    {
+      "world_name": "p9",
+      "image_x": 1119.0000000000002,
+      "image_y": 352.0000000000001,
+      "canvas_x": 435.16666666666674,
+      "canvas_y": 136.8888888888889
+    },
+    {
+      "world_name": "p15",
+      "image_x": 378.0,
+      "image_y": 171.0,
+      "canvas_x": 147.0,
+      "canvas_y": 66.5
     },
     {
       "world_name": "p16",
-      "image_x": 398.5714285714286,
-      "image_y": 365.14285714285717,
-      "canvas_x": 155.0,
-      "canvas_y": 142.0
+      "image_x": 1072.0000000000002,
+      "image_y": 152.0000000000001,
+      "canvas_x": 416.88888888888897,
+      "canvas_y": 59.11111111111115
     },
     {
-      "world_name": "p13",
-      "image_x": 614.5714285714287,
-      "image_y": 223.71428571428572,
-      "canvas_x": 239.0,
-      "canvas_y": 87.0
-    },
-    {
-      "world_name": "p13",
-      "image_x": 1092.857142857143,
-      "image_y": 532.2857142857143,
-      "canvas_x": 425.0,
-      "canvas_y": 207.0
-    },
-    {
-      "world_name": "p13",
-      "image_x": 1092.857142857143,
-      "image_y": 532.2857142857143,
-      "canvas_x": 425.0,
-      "canvas_y": 207.0
+      "world_name": "p11",
+      "image_x": 637.0,
+      "image_y": 919.0000000000002,
+      "canvas_x": 247.7222222222222,
+      "canvas_y": 357.38888888888897
     }
   ]
 }

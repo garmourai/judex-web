@@ -1,0 +1,138 @@
+{
+  "points": [
+    {
+      "id": "pickleball_15",
+      "imageX": 477,
+      "imageY": 984,
+      "worldX": 6.096,
+      "worldY": 13.41,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_14",
+      "imageX": 188,
+      "imageY": 733,
+      "worldX": 3.048,
+      "worldY": 13.41,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_13",
+      "imageX": 60,
+      "imageY": 622,
+      "worldX": 0,
+      "worldY": 13.41,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_10",
+      "imageX": 569,
+      "imageY": 488,
+      "worldX": 0,
+      "worldY": 8.835,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_11",
+      "imageX": 772,
+      "imageY": 522,
+      "worldX": 3.048,
+      "worldY": 8.835,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_12",
+      "imageX": 1122,
+      "imageY": 580,
+      "worldX": 6.096,
+      "worldY": 8.835,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_7",
+      "imageX": 1246,
+      "imageY": 505,
+      "worldX": 6.096,
+      "worldY": 6.705,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_9",
+      "imageX": 1257,
+      "imageY": 387,
+      "worldX": 6.096,
+      "worldY": 6.705,
+      "worldZ": 0.914
+    },
+    {
+      "id": "pickleball_6",
+      "imageX": 708,
+      "imageY": 451,
+      "worldX": 0,
+      "worldY": 6.705,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_8",
+      "imageX": 708,
+      "imageY": 377,
+      "worldX": 0,
+      "worldY": 6.705,
+      "worldZ": 0.914
+    },
+    {
+      "id": "pickleball_3",
+      "imageX": 826,
+      "imageY": 420,
+      "worldX": 0,
+      "worldY": 4.575,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_4",
+      "imageX": 1031,
+      "imageY": 432,
+      "worldX": 3.048,
+      "worldY": 4.575,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_5",
+      "imageX": 1334,
+      "imageY": 452,
+      "worldX": 6.096,
+      "worldY": 4.575,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_0",
+      "imageX": 1004,
+      "imageY": 373,
+      "worldX": 0,
+      "worldY": 0,
+      "worldZ": 0
+    },
+    {
+      "id": "pickleball_1",
+      "imageX": 1188,
+      "imageY": 375,
+      "worldX": 3.048,
+      "worldY": 0,
+      "worldZ": 0
+    }
+  ],
+  "image_dimensions": {
+    "width": 1440,
+    "height": 1080
+  },
+  "total_points": 15,
+  "metadata": {
+    "camera_mac": "2c:cf:67:16:73:9a",
+    "track_index": "1232",
+    "center_name": "GameTheorySarjapur",
+    "sport": "pickleball",
+    "court": "court2",
+    "saved_at": "2025-12-13T19:36:07.058023",
+    "directory_name": "GameTheorySarjapur_pickleball_court2"
+  }
+}

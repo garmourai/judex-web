@@ -7,6 +7,8 @@ from cv_code.pipeline_config import PipelineConfig
 from cv_code.triplet_pipeline_runner import run_triplet_pipeline
 from cv_code.time_profiler import TimeProfiler
 
+CALIB_BASE = "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/calibration_1512"
+
 # Optional: limit triplet CSV rows by Source_Index (same as dist_tracker Frame / global sync id).
 # Inclusive range; use None for no bound on that side. If no row falls in range, inference writes
 # no frames and correlation sees empty dist_tracker CSVs — widen the range or use None, None.
@@ -20,8 +22,8 @@ config = PipelineConfig(
     camera_1_output_dir="/mnt/data/cv_output/source",
     camera_2_output_dir="/mnt/data/cv_output/sink",
     unique_output_dir="/mnt/data/cv_output",
-    camera_1_object_path="cv_code/calib_data/1232_court2_1232/d8-3a-dd-ef-e9-03/camera_object.pkl",
-    camera_2_object_path="cv_code/calib_data/1232_court2_1232/2c-cf-67-16-73-9a/camera_object.pkl",
+    camera_1_object_path=f"{CALIB_BASE}/source/camera_object.pkl",
+    camera_2_object_path=f"{CALIB_BASE}/sink/camera_object.pkl",
     triplet_source_index_min=TRIPLET_SOURCE_INDEX_MIN,
     triplet_source_index_max=TRIPLET_SOURCE_INDEX_MAX,
 )

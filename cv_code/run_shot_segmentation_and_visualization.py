@@ -13,7 +13,7 @@ Usage examples:
 2) JSON + overlay video
     python cv_code/run_shot_segmentation_and_visualization.py \
       --video-path /path/to/source_video.mp4 \
-      --camera-pkl-path cv_code/calib_data/.../camera_object.pkl \
+      --camera-pkl-path /home/ubuntu/test_work/judex-web/tools/pickleball_calib/calibration_1512/source/camera_object.pkl \
       --triplet-csv-path /mnt/data/mar30_test/segments_1541/sync/hls_sync_1541_triple.csv
 """
 
@@ -33,7 +33,8 @@ from shot_segmentation_and_landing.visualize_events import create_event_overlay_
 
 DEFAULT_TRAJECTORY_OUTPUT = "/mnt/data/cv_output/trajectory_output"
 DEFAULT_OUTPUT_DIR = "/mnt/data/cv_output/trajectory_and_visualization"
-DEFAULT_CAMERA_PKL = "cv_code/calib_data/1232_court2_1232/d8-3a-dd-ef-e9-03/camera_object.pkl"
+DEFAULT_CALIB_BASE = "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/calibration_1512"
+DEFAULT_CAMERA_PKL = os.path.join(DEFAULT_CALIB_BASE, "source", "camera_object.pkl")
 DEFAULT_VIDEO_PATH = "/mnt/data/mar30_test/ts_segments_source/1541/playlist.m3u8"
 DEFAULT_TRIPLET_CSV = "/mnt/data/mar30_test/segments_1541/sync/hls_sync_1541_triple.csv"
 
