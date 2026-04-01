@@ -1,0 +1,11 @@
+{
+  "calibration_type": "pinhole",
+  "is_fisheye": false,
+  "chessboard": {
+    "internal_corners": [6, 8],
+    "square_size_mm": 25
+  },
+  "notes": "Sink images for calibration (extracted frames go here)"
+  ,
+  "checkerboard_path": "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/3.6mm_checkerboard"
+}

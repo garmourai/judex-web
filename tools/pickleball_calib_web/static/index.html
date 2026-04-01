@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Pickleball Calibration</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2.5em;
+            margin-bottom: 10px;
+        }
+        
+        .header p {
+            opacity: 0.95;
+            font-size: 1.1em;
+        }
+        
+        .tabs {
+            display: flex;
+            border-bottom: 2px solid #eee;
+            background: #f8f9fa;
+        }
+        
+        .tab-button {
+            flex: 1;
+            padding: 16px;
+            border: none;
+            background: none;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 500;
+            color: #666;
+            transition: all 0.3s;
+            border-bottom: 3px solid transparent;
+            margin-bottom: -2px;
+        }
+        
+        .tab-button:hover {
+            background: white;
+            color: #667eea;
+        }
+        
+        .tab-button.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        
+        .content {
+            display: flex;
+            min-height: 100vh;
+            padding: 20px;
+            gap: 20px;
+        }
+        
+        .tab-pane {
+            display: none;
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background: #f9f9f9;
+            border-radius: 8px;
+        }
+        
+        .tab-pane.active {
+            display: block;
+        }
+        
+        .tab-pane.split {
+            display: flex;
+            gap: 30px;
+            flex-wrap: wrap;
+        }
+        
+        .section {
+            flex: 1;
+            min-width: 400px;
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+        
+        .section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .section h3 {
+            color: #555;
+            margin-top: 20px;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        
+        .form-group {
+            margin-bottom: 15px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #555;
+            font-weight: 500;
+        }
+        
+        select, input[type="number"], input[type="text"] {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+            background: white;
+            position: relative;
+            z-index: 10;
+        }
+        
+        select {
+            appearance: none;
+            background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6 9 12 15 18 9'%3e%3c/polyline%3e%3c/svg%3e");
+            background-repeat: no-repeat;
+            background-position: right 12px center;
+            background-size: 20px;
+            padding-right: 40px;
+        }
+        
+        select:focus, input:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 6px;
+            font-size: 1em;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .btn-secondary {
+            background: #e0e0e0;
+            color: #333;
+            margin-right: 10px;
+        }
+        
+        .btn-secondary:hover {
+            background: #d0d0d0;
+        }
+        
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 0.9em;
+        }
+        
+        .info-box {
+            background: #e8f4fd;
+            border-left: 4px solid #667eea;
+            padding: 15px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+        }
+        
+        .info-box p {
+            color: #555;
+            line-height: 1.6;
+        }
+        
+        .status {
+            padding: 10px 15px;
+            border-radius: 4px;
+            margin-bottom: 15px;
+            display: none;
+        }
+        
+        .status.show {
+            display: block;
+        }
+        
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+        
+        canvas {
+            border: 2px solid #667eea;
+            background: white;
+            cursor: crosshair;
+            max-width: 100%;
+            height: auto;
+            border-radius: 4px;
+            display: block;
+            width: 100%;
+            min-height: 600px;
+        }
+        
+        .canvas-container {
+            position: relative;
+            margin-bottom: 20px;
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            min-height: 650px;
+        }
+        
+        .point-list {
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 15px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .point-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px;
+            background: white;
+            margin-bottom: 8px;
+            border-radius: 4px;
+            border-left: 3px solid #667eea;
+        }
+        
+        .point-item button {
+            padding: 5px 10px;
+            font-size: 0.85em;
+            background: #ff6b6b;
+            color: white;
+        }
+        
+        .point-item button:hover {
+            background: #ff5252;
+        }
+        
+        .results-box {
+            background: #f0f0f0;
+            padding: 15px;
+            border-radius: 4px;
+            margin-top: 15px;
+        }
+        
+        .results-box pre {
+            background: white;
+            padding: 10px;
+            border-radius: 4px;
+            overflow-x: auto;
+            font-size: 0.85em;
+            color: #333;
+        }
+        
+        .folder-selector {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+        
+        .folder-radio {
+            display: flex;
+            align-items: center;
+        }
+        
+        .folder-radio input {
+            margin-right: 8px;
+            cursor: pointer;
+        }
+        
+        .folder-radio label {
+            margin: 0;
+            cursor: pointer;
+            font-weight: 400;
+        }
+        
+        .spinner {
+            display: inline-block;
+            width: 16px;
+            height: 16px;
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎾 Pickleball Calibration</h1>
+            <p>Intrinsic & Extrinsic Camera Calibration Tool</p>
+        </div>
+        
+        <div class="tabs">
+            <button class="tab-button active" onclick="switchTab('intrinsic')">
+                📐 Intrinsic Calibration
+            </button>
+            <button class="tab-button" onclick="switchTab('extrinsic')">
+                🎯 Extrinsic Calibration
+            </button>
+            <button class="tab-button" onclick="switchTab('results')">
+                📊 Results
+            </button>
+        </div>
+        
+        <div class="content">
+            <!-- Intrinsic Tab -->
+            <div id="intrinsic" class="tab-pane active split">
+                <div class="section">
+                    <h2>Settings</h2>
+                    
+                    <div class="info-box">
+                        <p><strong>Intrinsic Calibration:</strong> Calibrate camera matrix and distortion coefficients from chessboard images.</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Select Camera</label>
+                        <select id="intrinsic-folder">
+                            <option value="source">Source Camera</option>
+                            <option value="sink">Sink Camera</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Chessboard Width (corners)</label>
+                        <input type="number" id="chessboard-width" value="6" min="3" max="20">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Chessboard Height (corners)</label>
+                        <input type="number" id="chessboard-height" value="8" min="3" max="20">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Square Size (mm)</label>
+                        <input type="number" id="square-size" value="25" min="1" step="0.1">
+                    </div>
+                    
+                    <button class="btn-primary" onclick="runIntrinsicCalibration()">
+                        <span id="intrinsic-btn-text">🚀 Run Intrinsic Calibration</span>
+                    </button>
+                    
+                    <div id="intrinsic-status" class="status"></div>
+                </div>
+                
+                <div class="section">
+                    <h2>Status</h2>
+                    <div id="intrinsic-info" style="color: #666; line-height: 1.8;">
+                        <p>Loading configuration...</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Extrinsic Tab -->
+            <div id="extrinsic" class="tab-pane split">
+                <div class="section">
+                    <h2>Camera & World Points</h2>
+                    
+                    <div class="info-box">
+                        <p><strong>Extrinsic Calibration:</strong> Mark corresponding points between image and world coordinates, then compute camera pose.</p>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Select Camera</label>
+                        <select id="extrinsic-folder">
+                            <option value="source">Source Camera</option>
+                            <option value="sink">Sink Camera</option>
+                        </select>
+                    </div>
+                    
+                    <h3>World Points</h3>
+                    <div class="form-group">
+                        <label>Select World Point to Mark</label>
+                        <select id="world-point-select">
+                            <option value="">-- Choose a point --</option>
+                        </select>
+                    </div>
+                    
+                    <button class="btn-secondary btn-small" onclick="resetExtrinsicPoints()">Reset Points</button>
+                    <button class="btn-secondary btn-small" onclick="computeExtrinsic()">🔧 Compute Pose</button>
+                    <button class="btn-secondary btn-small" onclick="loadMarkedPointsFromJSON()" title="Load marked points from config.json">🔄 Refresh from JSON</button>
+                    
+                    <div id="extrinsic-status" class="status"></div>
+                </div>
+                
+                <div class="section">
+                    <h2>Mark Points on Image</h2>
+                    <p style="color: #666; margin-bottom: 10px;">Click on the image to mark world points</p>
+                    <div class="canvas-container">
+                        <canvas id="extrinsic-canvas"></canvas>
+                    </div>
+                    
+                    <h3>Marked Points</h3>
+                    <div id="marked-points-list" class="point-list">
+                        <p style="color: #999; text-align: center;">No points marked yet</p>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Results Tab -->
+            <div id="results" class="tab-pane">
+                <h2>Calibration Results</h2>
+                
+                <div class="form-group">
+                    <label>Select Camera</label>
+                    <select id="results-folder">
+                        <option value="source">Source Camera</option>
+                        <option value="sink">Sink Camera</option>
+                    </select>
+                    <button class="btn-primary btn-small" onclick="loadResults()">Load Results</button>
+                </div>
+                
+                <div id="results-container" style="color: #666;">
+                    <p>Select a camera and click "Load Results" to view calibration data</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let config = {};
+        let currentExtrinsicImage = null;
+        let markedPoints = [];
+        const canvasWidth = 1200;
+        const canvasHeight = 800;
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', async () => {
+            try {
+                const response = await fetch('/api/config');
+                config = await response.json();
+                console.log('Config loaded:', config);
+                
+                populateWorldPointSelect();
+                loadExtrinsicImage('source');
+                updateIntrinsicInfo();
+            } catch (error) {
+                console.error('Error loading config:', error);
+                showStatus('intrinsic', 'Failed to load configuration', 'error');
+            }
+        });
+
+        function switchTab(tabName) {
+            // Hide all tabs
+            document.querySelectorAll('.tab-pane').forEach(tab => {
+                tab.classList.remove('active');
+            });
+            
+            // Deactivate all buttons
+            document.querySelectorAll('.tab-button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show selected tab
+            document.getElementById(tabName).classList.add('active');
+            
+            // Activate corresponding button
+            event.target.classList.add('active');
+            
+            // Handle extrinsic canvas resize
+            if (tabName === 'extrinsic') {
+                setTimeout(() => {
+                    loadExtrinsicImage(document.getElementById('extrinsic-folder').value);
+                }, 100);
+            }
+        }
+
+        function populateWorldPointSelect() {
+            const select = document.getElementById('world-point-select');
+            Object.keys(config.world_points || {}).forEach(point => {
+                const option = document.createElement('option');
+                option.value = point;
+                const coords = config.world_points[point];
+                option.textContent = `${point} (${coords[0].toFixed(1)}, ${coords[1].toFixed(1)}, ${coords[2].toFixed(1)})`;
+                select.appendChild(option);
+            });
+        }
+
+        function updateIntrinsicInfo() {
+            const html = Object.entries(config.calib_folders || {}).map(([folder, calib]) => {
+                if (!calib.camera_matrix) return `<p><strong>${folder}:</strong> Not calibrated</p>`;
+                return `
+                    <p><strong>${folder}:</strong></p>
+                    <ul style="margin-left: 20px;">
+                        <li>Error: ${calib.reprojection_error?.toFixed(4) || 'N/A'} px</li>
+                        <li>Image: ${calib.image_size || 'N/A'}</li>
+                        <li>Fisheye: ${calib.is_fisheye ? 'Yes' : 'No'}</li>
+                    </ul>
+                `;
+            }).join('');
+            document.getElementById('intrinsic-info').innerHTML = html || '<p>No calibrations found</p>';
+        }
+
+        async function runIntrinsicCalibration() {
+            const folder = document.getElementById('intrinsic-folder').value;
+            const btn = event.target;
+            btn.disabled = true;
+            btn.innerHTML = '<span class="spinner"></span> Calibrating...';
+            
+            try {
+                const response = await fetch('/api/intrinsic/calibrate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        folder: folder,
+                        chessboard_size: [
+                            parseInt(document.getElementById('chessboard-width').value),
+                            parseInt(document.getElementById('chessboard-height').value)
+                        ],
+                        square_size: parseFloat(document.getElementById('square-size').value)
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('intrinsic', 
+                        `✅ Calibration successful! Error: ${result.reprojection_error.toFixed(4)} px`, 
+                        'success');
+                    updateIntrinsicInfo();
+                } else {
+                    showStatus('intrinsic', `❌ ${result.error || 'Calibration failed'}`, 'error');
+                }
+            } catch (error) {
+                showStatus('intrinsic', `❌ Error: ${error.message}`, 'error');
+            } finally {
+                btn.disabled = false;
+                btn.innerHTML = '🚀 Run Intrinsic Calibration';
+            }
+        }
+
+        async function loadExtrinsicImage(folder) {
+            try {
+                const response = await fetch(`/api/image/${folder}`);
+                const data = await response.json();
+                const img = new Image();
+                img.onload = () => {
+                    currentExtrinsicImage = img;
+                    drawExtrinsicCanvas();
+                };
+                img.src = data.image;
+            } catch (error) {
+                console.error('Error loading image:', error);
+            }
+        }
+
+        function drawExtrinsicCanvas() {
+            const canvas = document.getElementById('extrinsic-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            if (!currentExtrinsicImage) return;
+            
+            // Get container dimensions
+            const container = canvas.parentElement;
+            const maxWidth = container.offsetWidth - 30;
+            const maxHeight = 800;
+            
+            // Calculate aspect ratio preserving dimensions
+            const imgAspect = currentExtrinsicImage.width / currentExtrinsicImage.height;
+            let newWidth = maxWidth;
+            let newHeight = newWidth / imgAspect;
+            
+            if (newHeight > maxHeight) {
+                newHeight = maxHeight;
+                newWidth = newHeight * imgAspect;
+            }
+            
+            canvas.width = newWidth;
+            canvas.height = newHeight;
+            
+            // Draw image
+            ctx.drawImage(currentExtrinsicImage, 0, 0, canvas.width, canvas.height);
+            
+            // Draw marked points with larger circles
+            markedPoints.forEach((point, index) => {
+                // Green circle
+                ctx.fillStyle = '#00ff00';
+                ctx.strokeStyle = '#ffffff';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(point.image_x, point.image_y, 12, 0, 2*Math.PI);
+                ctx.fill();
+                ctx.stroke();
+                
+                // Point number in center
+                ctx.fillStyle = 'white';
+                ctx.font = 'bold 16px Arial';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText((index+1).toString(), point.image_x, point.image_y);
+                
+                // Point label below
+                ctx.fillStyle = '#333';
+                ctx.font = 'bold 12px Arial';
+                ctx.fillText(point.world_name, point.image_x, point.image_y + 25);
+            });
+            
+            // Draw instructions at bottom
+            ctx.fillStyle = 'rgba(0, 255, 0, 0.9)';
+            ctx.fillRect(0, canvas.height - 30, canvas.width, 30);
+            ctx.fillStyle = 'white';
+            ctx.font = 'bold 14px Arial';
+            ctx.textAlign = 'center';
+            ctx.fillText(`Marked: ${markedPoints.length} points | Select a point above and click to mark`, canvas.width / 2, canvas.height - 8);
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            const canvas = document.getElementById('extrinsic-canvas');
+            canvas.addEventListener('click', (e) => {
+                if (!currentExtrinsicImage) return;
+                
+                // Get the canvas bounding rectangle
+                const canvasRect = canvas.getBoundingClientRect();
+                
+                // Get click position relative to canvas
+                const clickX = e.clientX - canvasRect.left;
+                const clickY = e.clientY - canvasRect.top;
+                
+                // Get the actual displayed size of the canvas
+                const displayedWidth = canvasRect.width;
+                const displayedHeight = canvasRect.height;
+                
+                // Get the actual canvas resolution (internal pixel size)
+                const canvasWidth = canvas.width;
+                const canvasHeight = canvas.height;
+                
+                // Convert click coordinates from displayed space to canvas pixel space
+                // This accounts for any scaling due to CSS or responsive sizing
+                const imageX = Math.round((clickX / displayedWidth) * canvasWidth);
+                const imageY = Math.round((clickY / displayedHeight) * canvasHeight);
+                
+                // Clamp to canvas bounds
+                const clampedX = Math.max(0, Math.min(imageX, canvasWidth));
+                const clampedY = Math.max(0, Math.min(imageY, canvasHeight));
+                
+                const worldPointName = document.getElementById('world-point-select').value;
+                if (!worldPointName) {
+                    alert('Please select a world point first');
+                    return;
+                }
+                
+                console.log('Click registered:', {
+                    clickPos: { x: clickX, y: clickY },
+                    displayedSize: { width: displayedWidth, height: displayedHeight },
+                    canvasSize: { width: canvasWidth, height: canvasHeight },
+                    imageCoords: { x: imageX, y: imageY },
+                    clamped: { x: clampedX, y: clampedY },
+                    worldPoint: worldPointName
+                });
+                
+                markedPoints.push({
+                    world_name: worldPointName,
+                    image_x: clampedX,
+                    image_y: clampedY
+                });
+                
+                updateMarkedPointsList();
+                drawExtrinsicCanvas();
+            });
+        });
+
+        function updateMarkedPointsList() {
+            const listDiv = document.getElementById('marked-points-list');
+            
+            if (markedPoints.length === 0) {
+                listDiv.innerHTML = '<p style="color: #999; text-align: center;">No points marked yet</p>';
+                return;
+            }
+            
+            listDiv.innerHTML = markedPoints.map((point, index) => `
+                <div class="point-item">
+                    <span><strong>${index+1}.</strong> ${point.world_name} → (${point.image_x.toFixed(0)}, ${point.image_y.toFixed(0)})</span>
+                    <button onclick="removePoint(${index})">Remove</button>
+                </div>
+            `).join('');
+        }
+
+        function removePoint(index) {
+            markedPoints.splice(index, 1);
+            updateMarkedPointsList();
+            drawExtrinsicCanvas();
+        }
+
+        function resetExtrinsicPoints() {
+            markedPoints = [];
+            updateMarkedPointsList();
+            drawExtrinsicCanvas();
+        }
+
+        async function computeExtrinsic() {
+            if (markedPoints.length < 4) {
+                showStatus('extrinsic', '❌ Need at least 4 marked points', 'error');
+                return;
+            }
+            
+            const folder = document.getElementById('extrinsic-folder').value;
+            
+            try {
+                // First save marked points to JSON
+                const canvas = document.getElementById('extrinsic-canvas');
+                await saveMarkedPointsToJSON(folder, canvas.width, canvas.height);
+                
+                // Then compute extrinsic
+                const response = await fetch('/api/extrinsic/mark-points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        folder: folder,
+                        points: markedPoints
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (response.ok) {
+                    showStatus('extrinsic', 
+                        `✅ Extrinsic computed! Error: ${result.reprojection_error.toFixed(4)} px | Points saved to config.json`, 
+                        'success');
+                } else {
+                    showStatus('extrinsic', `❌ ${result.error || 'Computation failed'}`, 'error');
+                }
+            } catch (error) {
+                showStatus('extrinsic', `❌ Error: ${error.message}`, 'error');
+            }
+        }
+        
+        async function saveMarkedPointsToJSON(folder, canvasWidth, canvasHeight) {
+            try {
+                const response = await fetch('/api/extrinsic/save-marked-points', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        folder: folder,
+                        points: markedPoints,
+                        canvas_width: canvasWidth,
+                        canvas_height: canvasHeight
+                    })
+                });
+                
+                const result = await response.json();
+                if (result.success) {
+                    console.log('✅ Marked points saved to config.json');
+                    console.log('Scaled points:', result.scaled_points);
+                    return result;
+                } else {
+                    console.error('Error saving points:', result.error);
+                }
+            } catch (error) {
+                console.error('Error:', error);
+            }
+        }
+        
+        async function loadMarkedPointsFromJSON() {
+            const folder = document.getElementById('extrinsic-folder').value;
+            
+            try {
+                const response = await fetch(`/api/extrinsic/load-marked-points?folder=${folder}`);
+                const result = await response.json();
+                
+                if (result.success && result.points.length > 0) {
+                    // Load points from JSON (using canvas coordinates for display)
+                    markedPoints = result.points.map(p => ({
+                        world_name: p.world_name,
+                        image_x: p.canvas_x || p.image_x,
+                        image_y: p.canvas_y || p.image_y
+                    }));
+                    
+                    updateMarkedPointsList();
+                    drawExtrinsicCanvas();
+                    
+                    showStatus('extrinsic', 
+                        `✅ Loaded ${result.count} points from config.json`, 
+                        'success');
+                } else {
+                    showStatus('extrinsic', '⚠️ No marked points found in config.json', 'warning');
+                    markedPoints = [];
+                    updateMarkedPointsList();
+                    drawExtrinsicCanvas();
+                }
+            } catch (error) {
+                showStatus('extrinsic', `❌ Error loading points: ${error.message}`, 'error');
+            }
+        }
+
+        async function loadResults() {
+            const folder = document.getElementById('results-folder').value;
+            const container = document.getElementById('results-container');
+            
+            try {
+                const response = await fetch(`/api/results/${folder}`);
+                const results = await response.json();
+                
+                let html = '<div class="results-box">';
+                
+                if (results.intrinsic) {
+                    html += `<h3>Intrinsic Calibration</h3>
+                    <pre>${JSON.stringify(results.intrinsic, null, 2)}</pre>`;
+                } else {
+                    html += '<p>No intrinsic calibration found</p>';
+                }
+                
+                if (results.extrinsic) {
+                    html += `<h3 style="margin-top: 20px;">Extrinsic Calibration</h3>
+                    <pre>${JSON.stringify(results.extrinsic, null, 2)}</pre>`;
+                } else {
+                    html += '<p>No extrinsic calibration found</p>';
+                }
+                
+                html += '</div>';
+                container.innerHTML = html;
+            } catch (error) {
+                container.innerHTML = `<p style="color: red;">Error loading results: ${error.message}</p>`;
+            }
+        }
+
+        function showStatus(tabName, message, type) {
+            const statusDiv = document.getElementById(`${tabName}-status`);
+            statusDiv.textContent = message;
+            statusDiv.className = `status show ${type}`;
+            
+            if (type !== 'error') {
+                setTimeout(() => {
+                    statusDiv.classList.remove('show');
+                }, 5000);
+            }
+        }
+
+        // Load extrinsic image when folder changes
+        document.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('extrinsic-folder')?.addEventListener('change', (e) => {
+                loadExtrinsicImage(e.target.value);
+                resetExtrinsicPoints();
+            });
+        });
+    </script>
+</body>
+</html>

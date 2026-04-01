@@ -1,0 +1,64 @@
+{
+  "calibration_type": "pinhole",
+  "is_fisheye": false,
+  "chessboard": {
+    "internal_corners": [
+      6,
+      8
+    ],
+    "square_size_mm": 25
+  },
+  "notes": "Source images for calibration (extracted frames go here)",
+  "checkerboard_path": "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/3.6mm_checkerboard",
+  "extrinsic_marked_points": [
+    {
+      "world_name": "p1",
+      "image_x": 10,
+      "image_y": 10,
+      "canvas_x": 10,
+      "canvas_y": 10
+    },
+    {
+      "world_name": "p5",
+      "image_x": 545.1428571428572,
+      "image_y": 313.7142857142857,
+      "canvas_x": 212.0,
+      "canvas_y": 122.0
+    },
+    {
+      "world_name": "p4",
+      "image_x": 905.1428571428572,
+      "image_y": 46.28571428571429,
+      "canvas_x": 352.0,
+      "canvas_y": 18.0
+    },
+    {
+      "world_name": "p16",
+      "image_x": 398.5714285714286,
+      "image_y": 365.14285714285717,
+      "canvas_x": 155.0,
+      "canvas_y": 142.0
+    },
+    {
+      "world_name": "p13",
+      "image_x": 614.5714285714287,
+      "image_y": 223.71428571428572,
+      "canvas_x": 239.0,
+      "canvas_y": 87.0
+    },
+    {
+      "world_name": "p13",
+      "image_x": 1092.857142857143,
+      "image_y": 532.2857142857143,
+      "canvas_x": 425.0,
+      "canvas_y": 207.0
+    },
+    {
+      "world_name": "p13",
+      "image_x": 1092.857142857143,
+      "image_y": 532.2857142857143,
+      "canvas_x": 425.0,
+      "canvas_y": 207.0
+    }
+  ]
+}
