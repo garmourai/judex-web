@@ -13,7 +13,7 @@ Usage examples:
 2) JSON + overlay video
     python cv_code/run_shot_segmentation_and_visualization.py \
       --video-path /path/to/source_video.mp4 \
-      --camera-pkl-path /home/ubuntu/test_work/judex-web/tools/pickleball_calib/calibration_1512/source/camera_object.pkl \
+      --camera-pkl-path <latest under tools/pickleball_calib>/source/camera_object.pkl \\
       --triplet-csv-path /mnt/data/mar30_test/segments_1541/sync/hls_sync_1541_triple.csv
 """
 
@@ -21,12 +21,13 @@ import argparse
 import json
 import os
 import sys
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Keep imports compatible with current repo layout/camera pickle unpickling.
 sys.path.insert(0, ".")
 sys.path.insert(0, "cv_code")
 
+from shot_segmentation_and_landing.filter_stats_merger import merge_filter_stats
 from shot_segmentation_and_landing.postprocess_pipeline import run_coarse_rally_pipeline
 from shot_segmentation_and_landing.visualize_events import create_event_overlay_video
 
@@ -49,6 +50,30 @@ def _chunk_ranges(start_frame: int, end_frame: int, block_size: int) -> List[Tup
     return ranges
 
 
+def _sync_frame_bounds_for_visualization(
+    trajectory_output_dir: str,
+    start_frame: Optional[int],
+    end_frame: Optional[int],
+) -> Optional[Tuple[int, int]]:
+    """
+    Inclusive sync-frame range [lo, hi] for overlay chunking.
+    Uses merged trajectory rows; optional start/end clip that range.
+    Returns None if no trajectory rows exist.
+    """
+    merged_rows, _ = merge_filter_stats(trajectory_output_dir, verbose=False)
+    if not merged_rows:
+        return None
+    frames = [int(r["frame_number_after_sync"]) for r in merged_rows]
+    lo_all, hi_all = min(frames), max(frames)
+    lo = start_frame if start_frame is not None else lo_all
+    hi = end_frame if end_frame is not None else hi_all
+    lo = max(lo, lo_all)
+    hi = min(hi, hi_all)
+    if lo > hi:
+        return None
+    return lo, hi
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Run postprocess shot segmentation and optional overlay visualization."
@@ -63,7 +88,16 @@ def main() -> None:
         "--visualization-block-size",
         type=int,
         default=1000,
-        help="Maximum sync-frame span per overlay video chunk when start/end are provided.",
+        help=(
+            "Split overlay into multiple MP4s, each covering at most this many sync-frame IDs "
+            "(default 1000). Set to 0 for one file. Bounds come from trajectory data unless "
+            "--start-frame/--end-frame clip them."
+        ),
+    )
+    parser.add_argument(
+        "--single-overlay",
+        action="store_true",
+        help="Write one rally_shot_bounce_overlay.mp4 instead of chunked files.",
     )
     parser.add_argument("--quiet", action="store_true")
 
@@ -113,21 +147,31 @@ def main() -> None:
     if not args.video_path:
         raise ValueError("Visualization is enabled by default; --video-path is required.")
 
+    if args.start_frame is not None and args.end_frame is not None and args.start_frame > args.end_frame:
+        raise ValueError("--start-frame must be <= --end-frame")
+
     triplet_csv_path = args.triplet_csv_path if os.path.exists(args.triplet_csv_path) else ""
     if not triplet_csv_path and not args.quiet:
         print("[runner] triplet csv not found; falling back to identity sync->video frame mapping")
 
-    # Chunked visualization: when explicit range is provided, split into
-    # max-N-frame blocks (default 1000) and render one video per chunk.
-    if args.start_frame is not None and args.end_frame is not None:
-        if args.start_frame > args.end_frame:
-            raise ValueError("--start-frame must be <= --end-frame")
-        if args.visualization_block_size <= 0:
-            raise ValueError("--visualization-block-size must be > 0")
+    # Chunked visualization: default split into ~visualization_block_size sync-frame spans
+    # (easy to download). Optional --single-overlay for one file.
+    use_chunks = (
+        not args.single_overlay
+        and args.visualization_block_size > 0
+    )
+    bounds = _sync_frame_bounds_for_visualization(
+        args.trajectory_output, args.start_frame, args.end_frame
+    )
 
-        chunks = _chunk_ranges(args.start_frame, args.end_frame, args.visualization_block_size)
+    if use_chunks and bounds is not None:
+        lo, hi = bounds
+        chunks = _chunk_ranges(lo, hi, args.visualization_block_size)
         if not args.quiet:
-            print(f"[runner] rendering {len(chunks)} visualization chunk(s)")
+            print(
+                f"[runner] overlay sync range [{lo}, {hi}] -> {len(chunks)} chunk(s) "
+                f"(<= {args.visualization_block_size} sync-frame IDs each)"
+            )
 
         base_no_ext, ext = os.path.splitext(overlay_path)
         ext = ext or ".mp4"
@@ -147,6 +191,8 @@ def main() -> None:
             if not args.quiet:
                 print(f"[runner] wrote overlay chunk: {chunk_out}")
     else:
+        if use_chunks and bounds is None and not args.quiet:
+            print("[runner] no merged trajectory rows; writing single overlay without chunk bounds")
         create_event_overlay_video(
             trajectory_output_dir=args.trajectory_output,
             postprocess_json_path=json_path,

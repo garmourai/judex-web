@@ -35,10 +35,20 @@ from .coarse_rally import (
     merged_rows_to_best_per_frame,
     merged_rows_to_segment_data,
 )
+from .calib_paths import (
+    default_sink_camera_pkl_path,
+    default_source_camera_pkl_path,
+    get_latest_calib_data_dir,
+    pickleball_calib_dir,
+)
 from .postprocess_pipeline import run_coarse_rally_pipeline, landing_point_for_shot
 from .visualize_events import create_event_overlay_video
 
 __all__ = [
+    "default_sink_camera_pkl_path",
+    "default_source_camera_pkl_path",
+    "get_latest_calib_data_dir",
+    "pickleball_calib_dir",
     "NET_Y",
     "NET_HEIGHT",
     "MIN_FRAMES_BETWEEN_CROSSINGS",

@@ -24,6 +24,7 @@ from .coarse_rally import (
 from .filter_stats_merger import merge_filter_stats
 from .net_crossing_detector import NET_Y, NetCrossingDetector
 from .shot_point_detection import detect_shot_points
+from .calib_paths import default_source_camera_pkl_path
 from .visualize_events import create_event_overlay_video
 
 
@@ -141,7 +142,11 @@ def main() -> None:
     p.add_argument("--quiet", action="store_true")
     p.add_argument("--visualize", action="store_true", help="Create event overlay video")
     p.add_argument("--video-path", default="", help="Source camera video path for overlay")
-    p.add_argument("--camera-pkl-path", default="", help="Camera calibration pickle path for reprojection")
+    p.add_argument(
+        "--camera-pkl-path",
+        default=default_source_camera_pkl_path(),
+        help="Camera calibration pickle path for reprojection (default: latest under tools/pickleball_calib)",
+    )
     p.add_argument(
         "--triplet-csv-path",
         default="",

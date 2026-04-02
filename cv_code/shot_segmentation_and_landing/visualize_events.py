@@ -132,8 +132,11 @@ def create_event_overlay_video(
             r for r in merged_rows if lo <= int(r["frame_number_after_sync"]) <= hi
         ]
     best_per_frame = merged_rows_to_best_per_frame(merged_rows)
-    if not best_per_frame:
-        raise RuntimeError("No merged points available for visualization.")
+    if not best_per_frame and verbose:
+        print(
+            "[visualize] warning: no trajectory points in this sync range; "
+            "writing every video frame with event overlays only (no ball trail)."
+        )
 
     cam = load_camera(camera_pkl_path)
     triplet_source_indices = load_triplet_source_indices(triplet_csv_path) if triplet_csv_path else []
@@ -204,14 +207,10 @@ def create_event_overlay_video(
             sync_frame = triplet_source_indices[frame_idx]
         else:
             sync_frame = frame_idx
-        if start_sync_frame is not None and sync_frame < start_sync_frame:
-            frame_idx += 1
-            continue
-        if end_sync_frame is not None and sync_frame > end_sync_frame:
-            frame_idx += 1
-            continue
+        # Decode window already limits which frames we read; never skip writing a frame
+        # (older code used continue here and dropped frames from the output MP4).
 
-        if sync_frame in best_per_frame:
+        if best_per_frame and sync_frame in best_per_frame:
             _, point3d = best_per_frame[sync_frame]
             try:
                 u, v = reproject_point(cam, point3d)
@@ -282,7 +281,12 @@ def create_event_overlay_video(
     writer.release()
 
     if verbose:
+        frames_written = frame_idx - decode_start_idx
         print(f"[visualize] wrote: {output_video_path}")
-        print(f"[visualize] frames: {frame_idx}, event-frames: {drawn_events}")
+        print(
+            f"[visualize] frames_written: {frames_written} "
+            f"(decode_idx [{decode_start_idx}, {decode_end_idx if decode_end_idx is not None else '…'}]), "
+            f"event-frames: {drawn_events}"
+        )
     return output_video_path
 
