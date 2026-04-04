@@ -81,6 +81,7 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
   const [speedMenuOpen, setSpeedMenuOpen] = useState(false);
   const speedMenuRef = useRef<HTMLDivElement>(null);
   const seekingRef = useRef(false);
+  const seekCooldownRef = useRef(0);
   const wrapperRef = useRef<HTMLDivElement>(null);
 
   // Fetch multi-camera replay metadata
@@ -158,6 +159,9 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     let rafId: number;
     const tick = () => {
       const leader = sourceRef.current?.getVideo();
+      const now = Date.now();
+      const inCooldown = now < seekCooldownRef.current;
+
       if (leader && !seekingRef.current && !leader.seeking) {
         const t = leader.currentTime;
         const syncT = Math.max(0, t - sourceStartOffset);
@@ -167,27 +171,29 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
 
         const mapIdx = hasSyncMap ? sourceTimeToMapIdx(t) : -1;
 
-        for (const cam of ['hq', 'sink'] as const) {
-          const follower = refs[cam].current?.getVideo();
-          if (!follower || !Number.isFinite(follower.duration)) continue;
+        if (!inCooldown) {
+          for (const cam of ['hq', 'sink'] as const) {
+            const follower = refs[cam].current?.getVideo();
+            if (!follower || !Number.isFinite(follower.duration)) continue;
 
-          if (follower.seeking) continue;
+            if (follower.seeking || follower.readyState < 2) continue;
 
-          if (leaderPlaying && follower.paused && follower.readyState >= 3) {
-            follower.play().catch(() => {});
-          }
+            if (leaderPlaying && follower.paused && follower.readyState >= 3) {
+              follower.play().catch(() => {});
+            }
 
-          let target: number;
-          if (hasSyncMap && mapIdx >= 0) {
-            const targetFrame = meta.syncMap![cam][mapIdx];
-            if (targetFrame < 0) { target = t + getDelta(cam); }
-            else { target = frameToPlaylistTime(cam, targetFrame); }
-          } else {
-            target = t + getDelta(cam);
-          }
+            let target: number;
+            if (hasSyncMap && mapIdx >= 0) {
+              const targetFrame = meta.syncMap![cam][mapIdx];
+              if (targetFrame < 0) { target = t + getDelta(cam); }
+              else { target = frameToPlaylistTime(cam, targetFrame); }
+            } else {
+              target = t + getDelta(cam);
+            }
 
-          if (target >= 0 && Math.abs(follower.currentTime - target) > SYNC_THRESHOLD_SEC) {
-            follower.currentTime = target;
+            if (target >= 0 && Math.abs(follower.currentTime - target) > SYNC_THRESHOLD_SEC) {
+              follower.currentTime = target;
+            }
           }
         }
 
@@ -246,6 +252,7 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
 
   const seekFollowersToSourceTime = useCallback(
     (sourceTime: number) => {
+      seekCooldownRef.current = Date.now() + 2000;
       const mapIdx = sourceTimeToMapIdx(sourceTime);
       for (const cam of ['hq', 'sink'] as const) {
         const v = refs[cam].current?.getVideo();
