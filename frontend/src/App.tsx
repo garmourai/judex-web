@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { StreamPlayer } from './components/StreamPlayer';
 import { ReplayScreen } from './components/ReplayScreen';
+import { MultiReplayScreen } from './components/MultiReplayScreen';
 import './App.css';
 
 const STREAM_URL =
@@ -21,6 +22,12 @@ function parseReplayId(pathname: string): string | null {
   }
 }
 
+function parseMultiReplayId(pathname: string): string | null {
+  const m = pathname.match(/^\/multi-replay\/([^/]+)\/?$/);
+  if (!m) return null;
+  return m[1];
+}
+
 function replayPath(snapshotId: string) {
   return `/replay/${encodeURIComponent(snapshotId)}`;
 }
@@ -39,12 +46,14 @@ type SessionStatus = {
 export default function App() {
   const [pathname, setPathname] = useState(getPathname);
   const replayId = parseReplayId(pathname);
-  const route = replayId ? 'replay' : 'live';
+  const multiReplayId = parseMultiReplayId(pathname);
+  const route = multiReplayId ? 'multi-replay' : replayId ? 'replay' : 'live';
 
   const [streamUrl, setStreamUrl] = useState(STREAM_URL);
   const [inputUrl, setInputUrl] = useState(STREAM_URL);
   const [replayUrl, setReplayUrl] = useState<string>('');
   const [snapshotMinutes, setSnapshotMinutes] = useState('5');
+  const [multiSegmentId, setMultiSegmentId] = useState('');
   const [creatingSnapshot, setCreatingSnapshot] = useState(false);
   const [replayBootstrapLoading, setReplayBootstrapLoading] = useState(false);
   const [replayError, setReplayError] = useState<string | null>(null);
@@ -218,6 +227,28 @@ export default function App() {
     setPathname(getPathname());
   }, []);
 
+  const startMultiReplay = useCallback(() => {
+    const segId = multiSegmentId.trim() || sessionStatus.trackId;
+    if (!segId) return;
+    const parsed = Number(snapshotMinutes);
+    const mins = Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+    const url = `/multi-replay/${segId}?minutes=${mins}`;
+    window.history.pushState({}, '', url);
+    setPathname(getPathname());
+  }, [multiSegmentId, sessionStatus.trackId, snapshotMinutes]);
+
+  if (route === 'multi-replay' && multiReplayId) {
+    const params = new URLSearchParams(window.location.search);
+    const mins = Number(params.get('minutes')) || 5;
+    return (
+      <MultiReplayScreen
+        segmentId={multiReplayId}
+        minutes={mins}
+        onGoLive={goLive}
+      />
+    );
+  }
+
   if (route === 'replay') {
     return (
       <ReplayScreen
@@ -305,6 +336,25 @@ export default function App() {
         <span>min</span>
         <button type="button" onClick={startReplay} disabled={creatingSnapshot}>
           {creatingSnapshot ? 'Creating snapshot…' : 'Open replay page'}
+        </button>
+      </div>
+
+      <div className="snapshot-controls">
+        <label htmlFor="multiSegmentId">Segment ID</label>
+        <input
+          id="multiSegmentId"
+          type="text"
+          value={multiSegmentId}
+          onChange={(e) => setMultiSegmentId(e.target.value)}
+          placeholder={sessionStatus.trackId || 'e.g. 1563'}
+          style={{ width: '6rem' }}
+        />
+        <button
+          type="button"
+          onClick={startMultiReplay}
+          disabled={!multiSegmentId.trim() && !sessionStatus.trackId}
+        >
+          3-Camera Replay
         </button>
       </div>
       {replayError && <p className="error-text">{replayError}</p>}
