@@ -8,6 +8,7 @@ export default defineConfig({
     proxy: {
       '/api': { target: 'http://localhost:3014', changeOrigin: true },
       '/stream': { target: 'http://localhost:3014', changeOrigin: true },
+      '/cam': { target: 'http://localhost:3014', changeOrigin: true },
     },
   },
 });
