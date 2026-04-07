@@ -37,6 +37,51 @@ from ..trajectory.trajectory_realtime import create_trajectories_realtime, Traje
 from ..trajectory.merge_traj_realtime import merge_trajectories, merge_overlapping_trajectories
 
 
+_TRACKNET_OVERLAY_COLORS_BGR: Tuple[Tuple[int, int, int], ...] = (
+    (0, 255, 0),
+)
+
+
+def _write_tracknet_overlay_video(
+    frames_batch: List[FrameData],
+    viz_bboxes_by_frame_pos: Dict[int, List[Tuple[int, int, int, int]]],
+    out_path: str,
+    fps: float,
+) -> None:
+    """Draw heatmap-space bboxes on each TrackNet-sized BGR frame; one row per frame in batch order."""
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+    w, h = WIDTH, HEIGHT
+    writer = cv2.VideoWriter(out_path, fourcc, max(1.0, float(fps)), (w, h))
+    if not writer.isOpened():
+        print(f"[InferenceWorker] ⚠️  Could not open VideoWriter for {out_path}")
+        return
+    try:
+        for j in range(len(frames_batch)):
+            fd = frames_batch[j]
+            img = fd.frame
+            if img.shape[1] != w or img.shape[0] != h:
+                img = cv2.resize(img, (w, h))
+            else:
+                img = img.copy()
+            boxes = viz_bboxes_by_frame_pos.get(j, [])
+            for bi, (bx, by, bw, bh) in enumerate(boxes):
+                color = _TRACKNET_OVERLAY_COLORS_BGR[bi % len(_TRACKNET_OVERLAY_COLORS_BGR)]
+                cv2.rectangle(img, (bx, by), (bx + bw, by + bh), color, 2)
+            cv2.putText(
+                img,
+                f"id={fd.frame_id}",
+                (8, 24),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.6,
+                (255, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+            writer.write(img)
+    finally:
+        writer.release()
+
 
 class RealtimeInference:
     """
@@ -57,7 +102,13 @@ class RealtimeInference:
         camera_2_output_dir: str,
         batch_size: int = 4,
         seq_len: int = 8,
-        profiler=None
+        profiler=None,
+        heatmap_threshold: float = 0.25,
+        *,
+        unique_output_dir: str = "",
+        enable_tracknet_visualization: bool = False,
+        tracknet_visualization_fps: float = 30.0,
+        tracknet_visualization_dir: Optional[str] = None,
     ):
         self.tracknet_file = tracknet_file
         self.camera_1_id = camera_1_id
@@ -67,7 +118,18 @@ class RealtimeInference:
         self.batch_size = batch_size
         self.seq_len = seq_len
         self.profiler = profiler
-        
+        self.heatmap_threshold = float(heatmap_threshold)
+        self.enable_tracknet_visualization = enable_tracknet_visualization
+        self.tracknet_visualization_fps = float(tracknet_visualization_fps)
+        if tracknet_visualization_dir:
+            self.tracknet_visualization_dir = tracknet_visualization_dir
+        elif unique_output_dir:
+            self.tracknet_visualization_dir = os.path.join(unique_output_dir, "tracknet_overlay")
+        else:
+            self.tracknet_visualization_dir = os.path.join(
+                os.path.dirname(os.path.abspath(camera_1_output_dir)), "tracknet_overlay"
+            )
+
         # Create output directories
         os.makedirs(camera_1_output_dir, exist_ok=True)
         os.makedirs(camera_2_output_dir, exist_ok=True)
@@ -162,7 +224,10 @@ class RealtimeInference:
             raise RuntimeError("Inference engine not initialized")
         
         if len(frames) == 0:
-            return {'Frame': [], 'X': [], 'Y': [], 'Visibility': []}
+            return (
+                {'Frame': [], 'X': [], 'Y': [], 'Visibility': [], 'BatchPosition': []},
+                {},
+            )
         
         start_time_setup = time.time()
         if len(camera_mapping) != len(frames):
@@ -259,7 +324,8 @@ class RealtimeInference:
             'Visibility': [],
             'BatchPosition': [],
         }
-        
+        viz_bboxes_by_frame_pos: Dict[int, List[Tuple[int, int, int, int]]] = {}
+
         # Timing for inference and post-processing
         total_inference_time = 0.0
         total_postprocess_time = 0.0
@@ -305,7 +371,7 @@ class RealtimeInference:
             
             # Process predictions (timed separately)
             postprocess_start = time.time()
-            y_pred_np = (y_pred > 0.25).detach().cpu().numpy()
+            y_pred_np = (y_pred > self.heatmap_threshold).detach().cpu().numpy()
             
             # Convert to image format (N, L, H, W)
             batch_size, seq_len = y_pred_np.shape[0], y_pred_np.shape[1]
@@ -368,6 +434,12 @@ class RealtimeInference:
                     
                     # Multi-shuttle detection: get all detections (up to 3)
                     all_bbox_pred = predict_multi_location(heatmap_uint8)
+                    if self.enable_tracknet_visualization:
+                        viz_bboxes_by_frame_pos[frame_pos_in_batch] = [
+                            (int(b[0]), int(b[1]), int(b[2]), int(b[3]))
+                            for b in all_bbox_pred
+                            if int(b[2]) > 0 and int(b[3]) > 0
+                        ]
                     all_cx = []
                     all_cy = []
                     
@@ -406,7 +478,7 @@ class RealtimeInference:
         
         print(f"[InferenceWorker]    ✅ All batches processed, total predictions: {len(pred_dict['Frame'])}")
         
-        return pred_dict
+        return pred_dict, viz_bboxes_by_frame_pos
     
     def _save_first_batch_input(
         self,
@@ -571,13 +643,39 @@ class RealtimeInference:
             
             # Process batch and record processing time
             inference_start = time.time()
-            all_predictions = self._process_batch(frames_batch, camera_mapping, camera_id=camera_id)
+            all_predictions, viz_bboxes_by_frame_pos = self._process_batch(
+                frames_batch, camera_mapping, camera_id=camera_id
+            )
             inference_duration = time.time() - inference_start
             if self.profiler:
                 profiler_key = f"inference_process_96_frames_{camera_id}"
                 self.profiler.record(profiler_key, inference_duration, write_immediately=True, batch=profile_batch)
             
             print(f"[InferenceWorker]    ✅ Inference processing completed, got {len(all_predictions['Frame'])} predictions")
+
+            if self.enable_tracknet_visualization and self.tracknet_visualization_dir and len(frames_batch) > 0:
+                try:
+                    cam_subdir = os.path.join(self.tracknet_visualization_dir, camera_id)
+                    os.makedirs(cam_subdir, exist_ok=True)
+                    fids = [fd.frame_id for fd in frames_batch]
+                    lo, hi = min(fids), max(fids)
+                    safe_cam = camera_id.replace(os.sep, "_").replace("/", "_")
+                    out_path = os.path.join(
+                        cam_subdir,
+                        f"tracknet_overlay_{safe_cam}_batch{profile_batch}_fn{lo}_{hi}.mp4",
+                    )
+                    _write_tracknet_overlay_video(
+                        frames_batch,
+                        viz_bboxes_by_frame_pos,
+                        out_path,
+                        self.tracknet_visualization_fps,
+                    )
+                    print(
+                        f"[InferenceWorker]    Wrote TrackNet overlay video: {out_path} "
+                        f"({len(frames_batch)} frames)"
+                    )
+                except Exception as e:
+                    print(f"[InferenceWorker] ⚠️  TrackNet overlay video failed: {e}")
             
             # All predictions are from the same camera, so write directly to that camera's CSV
             predictions = {
