@@ -25,11 +25,20 @@ def _get_R_t(cam):
     return R, t
 
 
-def greedy_min_cost_assignment_with_disambiguation(pts1, pts2, cost_matrix_formula1, cost_matrix_formula2, ambiguity_thresh=3.0, frame_num = None):
+def greedy_min_cost_assignment_with_disambiguation(
+    pts1,
+    pts2,
+    cost_matrix_formula1,
+    cost_matrix_formula2,
+    ambiguity_thresh=3.0,
+    frame_num=None,
+    return_diagnostics=False,
+):
     num_rows, num_cols = cost_matrix_formula1.shape
     assigned_src = set()
     assigned_sink = set()
     assignments = []
+    diagnostics = []
 
     all_pairs = [(i, j, cost_matrix_formula1[i, j]) for i in range(num_rows) for j in range(num_cols)]
     all_pairs.sort(key=lambda x: x[2])
@@ -82,10 +91,26 @@ def greedy_min_cost_assignment_with_disambiguation(pts1, pts2, cost_matrix_formu
 
             # print(f"using formula 2 got this matching: {best_i} and {best_j}")
             if best_i not in assigned_src and best_j not in assigned_sink:
+                if return_diagnostics:
+                    diagnostics.append({
+                        "selected_i": int(best_i),
+                        "selected_j": int(best_j),
+                        "initial_i": int(i),
+                        "initial_j": int(j),
+                        "is_ambiguous": True,
+                    })
                 assignments.append((best_i, best_j))
                 assigned_src.add(best_i)
                 assigned_sink.add(best_j)
         else:
+            if return_diagnostics:
+                diagnostics.append({
+                    "selected_i": int(i),
+                    "selected_j": int(j),
+                    "initial_i": int(i),
+                    "initial_j": int(j),
+                    "is_ambiguous": False,
+                })
             assignments.append((i, j))
             assigned_src.add(i)
             assigned_sink.add(j)
@@ -96,6 +121,8 @@ def greedy_min_cost_assignment_with_disambiguation(pts1, pts2, cost_matrix_formu
     # if frame_num >= 2512:
     #     breakpoint()
 
+    if return_diagnostics:
+        return assignments, diagnostics
     return assignments
 
 
@@ -210,15 +237,32 @@ def build_cost_matrix(pts1, pts2, F, cam1, cam2, alpha=1.0, beta=1.0, gamma=1.0,
     return C, rho_matrix, epipolar_matrix, temporal_matrix
 
 
-def match_shuttles(cam1, cam2, pts1, pts2, alpha=1.0, beta=1.0, gamma=1.0,
-                  cost_threshold=100.0, prev_pts1=None, prev_pts2=None, prev_matches=None,
-                  prev_frame_gap: int = 1, max_frame_gap_for_temporal: int = 5, frame_num = 0):
+def match_shuttles(
+    cam1,
+    cam2,
+    pts1,
+    pts2,
+    alpha=1.0,
+    beta=1.0,
+    gamma=1.0,
+    cost_threshold=100.0,
+    prev_pts1=None,
+    prev_pts2=None,
+    prev_matches=None,
+    prev_frame_gap: int = 1,
+    max_frame_gap_for_temporal: int = 5,
+    frame_num=0,
+    return_diagnostics=False,
+):
     """
     pts1, pts2: List of undistorted pixel coordinates (x, y).
     prev_pts1, prev_pts2: Previous frame coordinates for temporal consistency.
     """
     if not pts1 or not pts2:
-        return [], np.zeros((len(pts1), len(pts2))), np.zeros((len(pts1), len(pts2))), np.zeros((len(pts1), len(pts2))), np.zeros((len(pts1), len(pts2)))
+        empty = np.zeros((len(pts1), len(pts2)))
+        if return_diagnostics:
+            return [], empty, empty, empty, empty, empty, []
+        return [], empty, empty, empty, empty
 
     F = compute_fundamental_matrix(cam1, cam2)
     C, rho_matrix, epipolar_matrix, temporal_matrix = build_cost_matrix(
@@ -234,14 +278,23 @@ def match_shuttles(cam1, cam2, pts1, pts2, alpha=1.0, beta=1.0, gamma=1.0,
 
     # Use formula2 (with temporal cost) for assignment
     formula2_matrix = alpha * epipolar_matrix + beta * rho_matrix + gamma * temporal_matrix
-    assignment = greedy_min_cost_assignment_with_disambiguation(
-        pts1, pts2,
+    assignment_result = greedy_min_cost_assignment_with_disambiguation(
+        pts1,
+        pts2,
         cost_matrix_formula1=C,
         cost_matrix_formula2=formula2_matrix,
         ambiguity_thresh=5.0,
-        frame_num = frame_num
+        frame_num=frame_num,
+        return_diagnostics=return_diagnostics,
     )
+    if return_diagnostics:
+        assignment, diagnostics = assignment_result
+    else:
+        assignment = assignment_result
+        diagnostics = []
     if cost_threshold is not None:
         assignment = [(i, j) for (i, j) in assignment if C[i, j] <= cost_threshold]
 
+    if return_diagnostics:
+        return assignment, C, rho_matrix, epipolar_matrix, temporal_matrix, formula2_matrix, diagnostics
     return assignment, C, rho_matrix, epipolar_matrix, temporal_matrix

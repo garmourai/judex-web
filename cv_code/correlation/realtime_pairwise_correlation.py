@@ -6,9 +6,8 @@ that removes frame_sync_info_path dependency since frames are already synced
 on a shared global frame id in the realtime flow.
 """
 
+import csv
 import os
-import cv2
-import numpy as np
 from .pairwise_correlation.data.data_loader import DataLoader
 from .pairwise_correlation.processing.segment_processor import SegmentProcessor
 from .pairwise_correlation.processing.cost_analyzer import CostAnalyzer
@@ -40,8 +39,7 @@ class RealtimeCorrelationEngine:
                                camera_1_id, camera_2_id,
                                camera_1_video_path, camera_2_video_path,
                                output_dir, frame_segments,
-                               camera_1_tracker_csv, camera_2_tracker_csv,
-                               create_video=False):
+                               camera_1_tracker_csv, camera_2_tracker_csv):
         """
         Perform pairwise shuttle matching between two camera views and generate visualization.
 
@@ -54,15 +52,12 @@ class RealtimeCorrelationEngine:
             output_dir: Directory to save results
             frame_segments: List of frame ranges to process [(start1, end1), (start2, end2)]
             camera_1_tracker_csv / camera_2_tracker_csv: Paths to each camera's dist_tracker CSV
-            create_video: Flag to enable video creation
         """
         alpha = self.config.DEFAULT_ALPHA
         beta = self.config.DEFAULT_BETA
 
-        perform_correlation_output = os.path.join(output_dir, "perform_correlation_output")
-
-        # Create directories
-        self.file_manager.create_output_directory(perform_correlation_output)
+        # Single-file correlation outputs live directly under output_dir (correlation root).
+        self.file_manager.create_output_directory(output_dir)
 
         # Load camera objects
         camera_1_cam, camera_2_cam = self.data_loader.load_camera_objects(camera_1_cam_path, camera_2_cam_path)
@@ -103,7 +98,7 @@ class RealtimeCorrelationEngine:
                 camera_2_id,
                 camera_1_video_path,
                 camera_2_video_path,
-                perform_correlation_output,
+                output_dir,
                 cap1,
                 cap2,
                 alpha,
@@ -118,22 +113,15 @@ class RealtimeCorrelationEngine:
     
     def _process_segment(self, segment, coords1, coords2, camera_1_cam, camera_2_cam,
                         camera_1_id, camera_2_id, camera_1_video_path, camera_2_video_path,
-                        perform_correlation_output,
+                        correlation_output_dir,
                         cap1, cap2, alpha, beta):
         """Process a single frame segment."""
         all_match_costs = []
-        every_match_costs = []
         frame_cost_matrices = {}
         other_info = {}
         cam1_start_frame, cam1_end_frame = segment
         
-        # Create segment output directory
-        segment_output_path = self.file_manager.create_segment_directory(
-            perform_correlation_output, cam1_start_frame, cam1_end_frame
-        )
-
-        # Clear existing metric files
-        self.metrics_writer.clear_existing_files(segment_output_path)
+        segment_output_path = correlation_output_dir
 
         # In realtime flow, both cameras use the same global frame id as the key.
         camera_2_frame_map = {
@@ -142,7 +130,7 @@ class RealtimeCorrelationEngine:
 
         # First pass: collect cost data
         self._first_pass_processing(camera_2_frame_map, coords1, coords2, camera_1_cam, camera_2_cam,
-                                  alpha, beta, all_match_costs, every_match_costs,
+                                  alpha, beta, all_match_costs,
                                   frame_cost_matrices, other_info)
 
         # Calculate global threshold
@@ -153,10 +141,11 @@ class RealtimeCorrelationEngine:
         self._second_pass_processing(frame_cost_matrices, other_info, camera_2_frame_map,
                                    coords1, coords2, camera_1_cam, camera_2_cam,
                                    camera_1_id, camera_2_id, segment_output_path,
+                                   segment,
                                    cap1, cap2, global_cost_threshold)
     
     def _first_pass_processing(self, camera_2_frame_map, coords1, coords2, camera_1_cam, camera_2_cam,
-                              alpha, beta, all_match_costs, every_match_costs,
+                              alpha, beta, all_match_costs,
                               frame_cost_matrices, other_info):
         """First pass: collect cost data for threshold calculation."""
         for frame_num in sorted(camera_2_frame_map.keys()):
@@ -164,7 +153,17 @@ class RealtimeCorrelationEngine:
             frame_num_cam2 = camera_2_frame_map[frame_num]
             pts2 = coords2.get(frame_num_cam2, [])
 
-            _, _, matches, cost_matrix, rho_matrix, epipolar_matrix, temporal_matrix = self.segment_processor.process_frame_matching(
+            (
+                _,
+                _,
+                matches,
+                cost_matrix,
+                rho_matrix,
+                epipolar_matrix,
+                temporal_matrix,
+                formula2_matrix,
+                match_diagnostics,
+            ) = self.segment_processor.process_frame_matching(
                 frame_num, pts1, pts2, camera_1_cam, camera_2_cam, alpha, beta
             )
 
@@ -172,23 +171,61 @@ class RealtimeCorrelationEngine:
                 min_cost = self.cost_analyzer.find_min_match_cost(matches, cost_matrix)
                 if min_cost is not None:
                     all_match_costs.append(min_cost)
-                
-                match_costs = self.cost_analyzer.collect_match_costs(matches, cost_matrix)
-                every_match_costs.extend(match_costs)
 
             # Save per-frame data for 2nd pass
-            frame_cost_matrices[frame_num] = (pts1, pts2, cost_matrix, matches)
+            frame_cost_matrices[frame_num] = (
+                pts1,
+                pts2,
+                cost_matrix,
+                matches,
+                formula2_matrix,
+                match_diagnostics,
+            )
             other_info[frame_num] = (rho_matrix, epipolar_matrix, temporal_matrix)
         
     
     def _second_pass_processing(self, frame_cost_matrices, other_info, camera_2_frame_map,
                               coords1, coords2, camera_1_cam, camera_2_cam,
                               camera_1_id, camera_2_id, segment_output_path,
+                              segment,
                               cap1, cap2, global_cost_threshold):
         """Second pass: apply global threshold and do full processing."""
-        # Setup CSV writer
+        # Setup output writers
         csv_path = self.file_manager.get_tracker_csv_path(segment_output_path)
-        writer, csvfile = self.csv_writer.create_tracker_csv(csv_path)
+        tracker_exists = os.path.exists(csv_path) and os.path.getsize(csv_path) > 0
+        csvfile = open(csv_path, "a", newline="")
+        writer = csv.writer(csvfile)
+        if not tracker_exists:
+            writer.writerow([
+                'Frame', 'Visibility', 'X', 'Y', 'Z', 'Original_Frame',
+                'Point_Coordinates_Camera1', 'Point_Coordinates_Camera2',
+                'Point_Costs_Formula1', 'Point_Costs_Formula2', 'Point_Costs_Epipolar',
+                'Point_Costs_Reprojection', 'Point_Costs_Temporal',
+            ])
+        match_decisions_csv_path = os.path.join(
+            segment_output_path,
+            self.config.MATCH_DECISIONS_CSV_FILE,
+        )
+        md_exists = os.path.exists(match_decisions_csv_path) and os.path.getsize(match_decisions_csv_path) > 0
+        match_decision_file = open(match_decisions_csv_path, "a", newline="")
+        match_decision_writer = csv.writer(match_decision_file)
+        if not md_exists:
+            match_decision_writer.writerow(
+                [
+                    "frame",
+                    "src_index",
+                    "sink_index",
+                    "selected",
+                    "selected_by_formula2",
+                    "cost_formula1",
+                    "cost_formula2",
+                    "epipolar_cost",
+                    "reprojection_cost",
+                    "temporal_cost",
+                    "is_ambiguous",
+                    "alternatives",
+                ]
+            )
 
         try:
             frame_count = 0
@@ -200,7 +237,7 @@ class RealtimeCorrelationEngine:
                 if frame_count % 100 == 0:  # Print progress every 100 frames
                     print(f"Processed {frame_count}/{total_frames_to_process} frames...")
                     
-                pts1, pts2, cost_matrix, matches = frame_cost_matrices[frame_num]
+                pts1, pts2, cost_matrix, matches, formula2_matrix, match_diagnostics = frame_cost_matrices[frame_num]
                 rho_matrix, epipolar_matrix, temporal_matrix = other_info[frame_num]
 
                 # Filter matches using global threshold
@@ -211,6 +248,19 @@ class RealtimeCorrelationEngine:
                 # Write metrics
                 self._write_frame_metrics(segment_output_path, frame_num, cost_matrix, 
                                         epipolar_matrix, rho_matrix, temporal_matrix)
+                self._write_match_decisions(
+                    match_decision_writer,
+                    frame_num,
+                    cost_matrix,
+                    formula2_matrix,
+                    epipolar_matrix,
+                    rho_matrix,
+                    temporal_matrix,
+                    pts1,
+                    pts2,
+                    filtered_matches,
+                    match_diagnostics,
+                )
 
                 # Triangulate matches
                 xs, ys, zs = self.segment_processor.triangulate_matches(
@@ -224,15 +274,26 @@ class RealtimeCorrelationEngine:
                 # Extract actual (x, y) coordinates from pts1 and pts2
                 point_coords_cam1 = [pts1[match[0]] for match in filtered_matches] if filtered_matches else []
                 point_coords_cam2 = [pts2[match[1]] for match in filtered_matches] if filtered_matches else []
+                point_costs_formula1 = [float(cost_matrix[i, j]) for i, j in filtered_matches] if filtered_matches else []
+                point_costs_formula2 = [float(formula2_matrix[i, j]) for i, j in filtered_matches] if filtered_matches else []
+                point_costs_epipolar = [float(epipolar_matrix[i, j]) for i, j in filtered_matches] if filtered_matches else []
+                point_costs_reprojection = [float(rho_matrix[i, j]) for i, j in filtered_matches] if filtered_matches else []
+                point_costs_temporal = [float(temporal_matrix[i, j]) for i, j in filtered_matches] if filtered_matches else []
 
                 # Write CSV data with point coordinates
                 self.csv_writer.write_frame_data(writer, frame_num, xs, ys, zs, frame_num,
-                                                point_coords_cam1, point_coords_cam2)
+                                                point_coords_cam1, point_coords_cam2,
+                                                point_costs_formula1,
+                                                point_costs_formula2,
+                                                point_costs_epipolar,
+                                                point_costs_reprojection,
+                                                point_costs_temporal)
             
             print(f"Completed processing {frame_count} frames for correlation.")
 
         finally:
             csvfile.close()
+            match_decision_file.close()
     
     def _write_frame_metrics(self, segment_output_path, frame_num, cost_matrix, epipolar_matrix, rho_matrix, temporal_matrix=None):
         """Write frame metrics to files."""
@@ -247,13 +308,82 @@ class RealtimeCorrelationEngine:
         if temporal_matrix is not None:
             self.metrics_writer.write_temporal_values(temporal_values_file, frame_num, temporal_matrix)
 
+    @staticmethod
+    def _build_alternatives(pts1_len, pts2_len, i, j, cost_matrix, formula2_matrix):
+        alternatives = []
+        for j_alt in range(pts2_len):
+            if j_alt == j:
+                continue
+            alternatives.append(
+                f"src:{i}->sink:{j_alt}|f1:{cost_matrix[i, j_alt]:.4f}|f2:{formula2_matrix[i, j_alt]:.4f}"
+            )
+        for i_alt in range(pts1_len):
+            if i_alt == i:
+                continue
+            alternatives.append(
+                f"src:{i_alt}->sink:{j}|f1:{cost_matrix[i_alt, j]:.4f}|f2:{formula2_matrix[i_alt, j]:.4f}"
+            )
+        return ";".join(alternatives)
+
+    def _write_match_decisions(
+        self,
+        writer,
+        frame_num,
+        cost_matrix,
+        formula2_matrix,
+        epipolar_matrix,
+        rho_matrix,
+        temporal_matrix,
+        pts1,
+        pts2,
+        filtered_matches,
+        match_diagnostics,
+    ):
+        selected_set = {(int(i), int(j)) for i, j in filtered_matches}
+        diagnostics_by_pair = {}
+        for item in match_diagnostics:
+            key = (int(item["selected_i"]), int(item["selected_j"]))
+            diagnostics_by_pair[key] = item
+
+        rows, cols = cost_matrix.shape
+        for i in range(rows):
+            for j in range(cols):
+                key = (i, j)
+                selected = key in selected_set
+                diag = diagnostics_by_pair.get(key)
+                selected_by_formula2 = bool(diag and (diag["initial_i"] != i or diag["initial_j"] != j))
+                is_ambiguous = bool(diag and diag["is_ambiguous"])
+                alternatives = self._build_alternatives(
+                    len(pts1),
+                    len(pts2),
+                    i,
+                    j,
+                    cost_matrix,
+                    formula2_matrix,
+                )
+                writer.writerow(
+                    [
+                        frame_num,
+                        i,
+                        j,
+                        int(selected),
+                        int(selected_by_formula2),
+                        f"{cost_matrix[i, j]:.6f}",
+                        f"{formula2_matrix[i, j]:.6f}",
+                        f"{epipolar_matrix[i, j]:.6f}",
+                        f"{rho_matrix[i, j]:.6f}",
+                        f"{temporal_matrix[i, j]:.6f}",
+                        int(is_ambiguous),
+                        alternatives,
+                    ]
+                )
+
 
 def do_pairwise_correlation_realtime(camera_1_cam_path, camera_2_cam_path,
                                      camera_1_id, camera_2_id,
                                      camera_1_video_path, camera_2_video_path,
                                      output_dir, frame_segments,
-                                     camera_1_tracker_csv, camera_2_tracker_csv,
-                                     create_video=False):
+                                     camera_1_tracker_csv, camera_2_tracker_csv):
     """
     Perform pairwise shuttle matching between two camera views in realtime flow.
 
@@ -267,5 +397,4 @@ def do_pairwise_correlation_realtime(camera_1_cam_path, camera_2_cam_path,
         camera_1_video_path, camera_2_video_path,
         output_dir, frame_segments,
         camera_1_tracker_csv, camera_2_tracker_csv,
-        create_video=create_video,
     )

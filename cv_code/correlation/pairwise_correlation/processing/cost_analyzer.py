@@ -47,19 +47,6 @@ class CostAnalyzer:
         """
         return [(i, j) for i, j in matches if cost_matrix[i, j] <= threshold]
     
-    def collect_match_costs(self, matches, cost_matrix):
-        """
-        Collect costs for all matches.
-        
-        Args:
-            matches: List of (i, j) match pairs
-            cost_matrix: Cost matrix
-            
-        Returns:
-            List of match costs
-        """
-        return [cost_matrix[i, j] for i, j in matches]
-    
     def find_min_match_cost(self, matches, cost_matrix):
         """
         Find the minimum match cost for a frame.

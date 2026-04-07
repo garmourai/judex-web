@@ -31,12 +31,39 @@ class CSVWriter:
         writer = csv.writer(csvfile)
         # Added Point_Coordinates_Camera1 and Point_Coordinates_Camera2 to track which points formed each tracker
         # Format: [(x1, y1), (x2, y2), ...] for each camera
-        writer.writerow(['Frame', 'Visibility', 'X', 'Y', 'Z', 'Original_Frame', 
-                        'Point_Coordinates_Camera1', 'Point_Coordinates_Camera2'])
+        writer.writerow([
+            'Frame',
+            'Visibility',
+            'X',
+            'Y',
+            'Z',
+            'Original_Frame',
+            'Point_Coordinates_Camera1',
+            'Point_Coordinates_Camera2',
+            'Point_Costs_Formula1',
+            'Point_Costs_Formula2',
+            'Point_Costs_Epipolar',
+            'Point_Costs_Reprojection',
+            'Point_Costs_Temporal',
+        ])
         return writer, csvfile
     
-    def write_frame_data(self, writer, frame_num, xs, ys, zs, original_frame=None, 
-                        point_coords_cam1=None, point_coords_cam2=None):
+    def write_frame_data(
+        self,
+        writer,
+        frame_num,
+        xs,
+        ys,
+        zs,
+        original_frame=None,
+        point_coords_cam1=None,
+        point_coords_cam2=None,
+        point_costs_formula1=None,
+        point_costs_formula2=None,
+        point_costs_epipolar=None,
+        point_costs_reprojection=None,
+        point_costs_temporal=None,
+    ):
         """
         Write frame data to CSV.
         
@@ -73,5 +100,23 @@ class CSVWriter:
         else:
             cam2_coords_str = '[]'
 
-        writer.writerow([frame_num, visibility, x_str, y_str, z_str, original_frame, 
-                        cam1_coords_str, cam2_coords_str])
+        def _format_costs(costs):
+            if costs is not None and len(costs) > 0:
+                return '[' + ', '.join(f"{float(c):.6f}" for c in costs) + ']'
+            return '[]'
+
+        writer.writerow([
+            frame_num,
+            visibility,
+            x_str,
+            y_str,
+            z_str,
+            original_frame,
+            cam1_coords_str,
+            cam2_coords_str,
+            _format_costs(point_costs_formula1),
+            _format_costs(point_costs_formula2),
+            _format_costs(point_costs_epipolar),
+            _format_costs(point_costs_reprojection),
+            _format_costs(point_costs_temporal),
+        ])

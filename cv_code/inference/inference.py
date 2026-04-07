@@ -31,10 +31,13 @@ from .utils_general import WIDTH, HEIGHT, to_img
 from .frame_reader import TracknetBuffer, FrameData
 from collections import deque
 
-# Import trajectory realtime module for trajectory creation after triangulation (realtime package copy)
-from ..trajectory.trajectory_realtime import create_trajectories_realtime, TrajectoryHandoffContext
-# Import trajectory merging functions (realtime package copy)
-from ..trajectory.merge_traj_realtime import merge_trajectories, merge_overlapping_trajectories
+# Import trajectory APIs from correlation-local trajectory package
+from ..correlation.trajectory import (
+    create_trajectories_realtime,
+    TrajectoryHandoffContext,
+    merge_trajectories,
+    merge_overlapping_trajectories,
+)
 
 
 _TRACKNET_OVERLAY_COLORS_BGR: Tuple[Tuple[int, int, int], ...] = (

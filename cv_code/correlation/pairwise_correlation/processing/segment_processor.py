@@ -93,7 +93,15 @@ class SegmentProcessor:
             prev_gap = max(1, frame_num - self._prev_frame_num)
 
         # Use previous undistorted points for temporal consistency
-        matches, cost_matrix, rho_matrix, epipolar_matrix, temporal_matrix = match_shuttles(
+        (
+            matches,
+            cost_matrix,
+            rho_matrix,
+            epipolar_matrix,
+            temporal_matrix,
+            formula2_matrix,
+            match_diagnostics,
+        ) = match_shuttles(
             camera_1_cam, camera_2_cam,
             undist_pts1, undist_pts2,
             alpha, beta, gamma=0.5,
@@ -103,7 +111,8 @@ class SegmentProcessor:
             prev_matches=getattr(self, "_prev_matches", None),
             prev_frame_gap=prev_gap,
             max_frame_gap_for_temporal=5,
-            frame_num = frame_num
+            frame_num=frame_num,
+            return_diagnostics=True,
         )
 
         # Update previous state for next call
@@ -112,8 +121,18 @@ class SegmentProcessor:
         self._prev_frame_num = frame_num
         self._prev_matches = matches
         
-        # Return temporal matrix for logging and analysis
-        return undist_pts1, undist_pts2, matches, cost_matrix, rho_matrix, epipolar_matrix, temporal_matrix
+        # Return temporal matrix and formula2 matrix for logging and analysis
+        return (
+            undist_pts1,
+            undist_pts2,
+            matches,
+            cost_matrix,
+            rho_matrix,
+            epipolar_matrix,
+            temporal_matrix,
+            formula2_matrix,
+            match_diagnostics,
+        )
     
     def triangulate_matches(self, filtered_matches, pts1, pts2, camera_1_cam, camera_2_cam):
         """

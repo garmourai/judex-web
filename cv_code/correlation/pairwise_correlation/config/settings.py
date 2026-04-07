@@ -39,6 +39,7 @@ class CorrelationConfig:
     REPROJ_VALUES_FILE = "reproj_values.txt"
     TEMPORAL_VALUES_FILE = "temporal_values.txt"
     TRACKER_CSV_FILE = "tracker.csv"
+    MATCH_DECISIONS_CSV_FILE = "match_decisions.csv"
     CORRELATION_VIDEO_FILE = "correlation_video.mp4"
     
     # Plot parameters
