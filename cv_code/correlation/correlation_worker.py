@@ -104,15 +104,14 @@ def _nearest_tracker_costs(
 def _append_trajectory_selection_jsonl(
     correlation_output_dir: str,
     segment: Tuple[int, int],
-    global_traj_offset: int,
     frame_decisions: List[Dict[str, Any]],
 ) -> Optional[str]:
     """
     Append one JSON object per line to trajectory_selection.jsonl (authoritative post-select_best output).
 
-    Each line includes frame_id, global trajectory ids, current_selected_point, current_ignored_points,
-    active_trajectories (with is_selected and optional costs copied from tracker.csv at write time),
-    and counters. Visualization reads only this file (not tracker.csv).
+    Each line includes frame_id, selected_trajectory_id (incremental track_id from Trajectory after merge),
+    current_selected_point, current_ignored_points, active_trajectories (with is_selected and optional
+    costs copied from tracker.csv at write time), and counters. Visualization reads only this file (not tracker.csv).
     """
     if not frame_decisions:
         return None
@@ -122,13 +121,12 @@ def _append_trajectory_selection_jsonl(
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
         for rec in frame_decisions:
-            local_sel = rec["local_selected_traj_idx"]
-            global_sel = global_traj_offset + local_sel
+            selected_tid = int(rec["selected_track_id"])
             frame_num = int(rec["frame"])
             frame_pts = costs_by_frame.get(frame_num, [])
             active = []
             for c in rec["active_candidates"]:
-                gid = global_traj_offset + c["local_traj_idx"]
+                gid = int(c["track_id"])
                 xf, yf, zf = float(c["x"]), float(c["y"]), float(c["z"])
                 matched = _nearest_tracker_costs(frame_pts, xf, yf, zf) or {}
                 active.append(
@@ -146,7 +144,7 @@ def _append_trajectory_selection_jsonl(
             out = {
                 "segment": [segment[0], segment[1]],
                 "frame_id": frame_num,
-                "selected_trajectory_id": global_sel,
+                "selected_trajectory_id": selected_tid,
                 "current_selected_point": (
                     {
                         "x": selected["x"],
@@ -268,7 +266,9 @@ def correlation_worker(
     
     # Track trajectory handoff context between segments
     trajectory_context = None
-    
+    # Monotonic track_id across segments (assigned after merge); must init before any += in loop.
+    next_track_id = 0
+
     # World points file for trajectory bounds checking (repo pickleball court outline)
     _repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     world_points_file = os.path.join(_repo_root, "tools", "pickleball_calib", "worldpickleball.txt")
@@ -590,9 +590,6 @@ def correlation_worker(
             
             trajectory_start_time = time.time()
             
-            # Track global trajectory offset across segments for consistent IDs
-            global_traj_offset = 0
-            
             tw, th = original_frame_width, original_frame_height
             if tw is None or th is None:
                 from ..triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
@@ -624,7 +621,7 @@ def correlation_worker(
             )
             
             # ============ TRAJECTORY MERGING ============
-            # Snapshot after merge steps but *before* get_best_point_each_frame (used for global traj IDs in JSON).
+            # Snapshot after merge steps but *before* get_best_point_each_frame (track_id assigned just above).
             trajectories_for_point_mapping: List = []
             removed_trajectories = []
             frame_decisions: List[Dict[str, Any]] = []
@@ -640,6 +637,10 @@ def correlation_worker(
 
                 trajectories_for_point_mapping = list(stored_trajectories)
 
+                for traj in stored_trajectories:
+                    traj.track_id = next_track_id
+                    next_track_id += 1
+
                 # Step 3: Filter to keep only one point per frame (select best trajectory)
                 (
                     stored_trajectories,
@@ -651,7 +652,6 @@ def correlation_worker(
                 trajectory_jsonl_path = _append_trajectory_selection_jsonl(
                     correlation_output_dir,
                     segment,
-                    global_traj_offset,
                     frame_decisions,
                 )
 
@@ -701,9 +701,6 @@ def correlation_worker(
             
             # Store merged & filtered trajectory data for visualization
             all_trajectory_data[segment] = stored_trajectories
-            
-            # Count pre-filter trajectories so global IDs stay unique across segments
-            global_traj_offset += len(trajectories_for_point_mapping)
             
             trajectory_duration = time.time() - trajectory_start_time
             t_trajectory = trajectory_duration

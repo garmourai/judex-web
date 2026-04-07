@@ -18,6 +18,8 @@ class Trajectory:
         self.has_motion = False
         self.filled_frames = {}
         self.net_hit_frames = {}
+        # Set after merge_trajectories / merge_overlapping_trajectories (incremental, unique per worker run).
+        self.track_id = None
 
     def check_motion(self, detection):
         if len(self.detections) > 0:

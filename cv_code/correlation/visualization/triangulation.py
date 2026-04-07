@@ -12,15 +12,15 @@ from ...inference.inference import get_trajectory_color
 from ..correlation_worker_utils import load_fid_to_stream_from_dist_tracker_csv
 from .utils import reproject_point
 
-# Overlay text: white on dark panels. Scales/layout are 25% of prior (75% smaller than last size).
+# Overlay text: white on dark panels. HUD + trajectory labels +50% vs prior; cost panel matches HUD.
 _VIZ_TEXT_COLOR = (255, 255, 255)
 _VIZ_FONT = cv2.FONT_HERSHEY_SIMPLEX
 _VIZ_THICKNESS = 1
-_VIZ_SCALE_HUD = 0.375
-_VIZ_SCALE_LABEL = 0.375
-_VIZ_SCALE_COST_TITLE = 0.4125
-_VIZ_SCALE_COST_LINE = 0.3375
-_VIZ_LINE_HEIGHT = 15
+_VIZ_SCALE_HUD = 0.5625
+_VIZ_SCALE_LABEL = 0.5625
+_VIZ_SCALE_COST_TITLE = 0.61875
+_VIZ_SCALE_COST_LINE = 0.50625
+_VIZ_LINE_HEIGHT = 23
 
 
 def _load_trajectory_selection_jsonl(
@@ -360,7 +360,7 @@ def create_visualization_from_triangulation(
                 # Step 3: Draw trajectory ID label (if enabled)
                 if show_trajectory_labels:
                     label = f"T{traj_id}"
-                    label_pos = (pt_int[0] + 14, pt_int[1] - 6)
+                    label_pos = (pt_int[0] + 18, pt_int[1] - 8)
                     (text_w, text_h), _ = cv2.getTextSize(
                         label, _VIZ_FONT, _VIZ_SCALE_LABEL, _VIZ_THICKNESS
                     )
@@ -400,7 +400,7 @@ def create_visualization_from_triangulation(
         cv2.rectangle(overlay, (10, 10), (10 + hud_w, 10 + overlay_height), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.55, frame_img, 0.45, 0, frame_img)
 
-        y_offset = 23
+        y_offset = 28
         line_height = _VIZ_LINE_HEIGHT
 
         # Line 1: FPS and Frame number
@@ -462,9 +462,9 @@ def create_visualization_from_triangulation(
             else:
                 cost_lines.append(f"{label}: []")
         right_pad = 15
-        box_w = 280
-        cost_line_spacing = 5
-        box_h = 6 + 5 * cost_line_spacing
+        box_w = 400
+        cost_line_spacing = 8
+        box_h = 8 + 5 * cost_line_spacing
         x2 = frame_img.shape[1] - right_pad
         x1 = max(0, x2 - box_w)
         y1 = 10

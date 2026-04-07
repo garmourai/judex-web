@@ -63,15 +63,19 @@ def _active_candidates_payload(
     frame_num: int,
     selected_traj_idx: int,
 ) -> List[Dict[str, Any]]:
-    """One entry per active trajectory at frame_num with local index and is_selected."""
+    """One entry per active trajectory at frame_num with track_id (post-merge) and is_selected."""
     out: List[Dict[str, Any]] = []
     for idx, traj in active_trajectories:
         if frame_num not in traj.detections:
             continue
         det = traj.detections[frame_num]
+        tid = traj.track_id
+        if tid is None:
+            raise ValueError("Trajectory.track_id must be set after merge before get_best_point_each_frame")
         out.append(
             {
                 "local_traj_idx": idx,
+                "track_id": int(tid),
                 "x": float(det.x),
                 "y": float(det.y),
                 "z": float(det.z),
@@ -112,10 +116,14 @@ def get_best_point_each_frame(
             if frame_num in selected_traj.detections:
                 det = selected_traj.detections[frame_num]
                 per_frame_stats.append({"frame": frame_num, "picked_traj_idx": selected_traj_idx, "picked_x": det.x, "picked_y": det.y, "picked_z": det.z, "points_before": points_before, "points_dropped": 0})
+                stid = selected_traj.track_id
+                if stid is None:
+                    raise ValueError("Trajectory.track_id must be set after merge before get_best_point_each_frame")
                 per_frame_decisions.append(
                     {
                         "frame": frame_num,
                         "local_selected_traj_idx": selected_traj_idx,
+                        "selected_track_id": int(stid),
                         "num_points_before": points_before,
                         "num_points_dropped": 0,
                         "active_candidates": _active_candidates_payload(
@@ -158,10 +166,14 @@ def get_best_point_each_frame(
                     "points_dropped": dropped,
                 }
             )
+            stid = selected_traj.track_id
+            if stid is None:
+                raise ValueError("Trajectory.track_id must be set after merge before get_best_point_each_frame")
             per_frame_decisions.append(
                 {
                     "frame": frame_num,
                     "local_selected_traj_idx": selected_traj_idx,
+                    "selected_track_id": int(stid),
                     "num_points_before": points_before,
                     "num_points_dropped": dropped,
                     "active_candidates": _active_candidates_payload(
