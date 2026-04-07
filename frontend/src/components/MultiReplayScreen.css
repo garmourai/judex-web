@@ -1,0 +1,195 @@
+.multi-replay-wrapper {
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  background: #111113;
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+/* ─── Main + sidebar layout ─────────────────────────────── */
+.multi-replay-layout {
+  display: flex;
+  background: #000;
+}
+
+.multi-replay-main {
+  flex: 1;
+  min-width: 0;
+  position: relative;
+}
+
+.multi-replay-main .stream-player {
+  max-width: none;
+}
+
+.multi-replay-main-slot {
+  display: none;
+  position: relative;
+}
+
+.multi-replay-main-slot.active {
+  display: block;
+  cursor: pointer;
+}
+
+.multi-replay-main-label {
+  position: absolute;
+  top: 10px;
+  left: 12px;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.72);
+  color: #e4e4e7;
+  padding: 4px 12px;
+  border-radius: 5px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  pointer-events: none;
+}
+
+/* ─── Frame counter overlay ──────────────────────────────── */
+.multi-replay-frame {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  z-index: 5;
+  background: rgba(0, 0, 0, 0.72);
+  color: #a5f3fc;
+  padding: 4px 10px;
+  border-radius: 5px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+}
+
+.multi-replay-main-slot:not(.active) .multi-replay-frame {
+  display: none;
+}
+
+/* ─── Camera switcher sidebar ────────────────────────────── */
+.multi-replay-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px;
+  width: 110px;
+  flex-shrink: 0;
+  background: #0a0a0c;
+}
+
+.multi-replay-thumb {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 60px;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  background: #1a1a1f;
+  color: #a1a1aa;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  font-family: inherit;
+  padding: 0;
+  overflow: hidden;
+}
+
+.multi-replay-thumb:hover {
+  background: #222228;
+  border-color: #3f3f46;
+  color: #e4e4e7;
+}
+
+.multi-replay-thumb.active {
+  border-color: #6366f1;
+  background: #1e1e2e;
+  color: #e4e4e7;
+}
+
+.multi-replay-thumb-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.multi-replay-thumb-unavail {
+  display: block;
+  font-size: 0.6rem;
+  color: #71717a;
+  margin-top: 2px;
+}
+
+.multi-replay-unavailable {
+  aspect-ratio: 4 / 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #1a1a1f;
+  color: #71717a;
+  font-size: 0.85rem;
+}
+
+/* ─── Controls overlay ───────────────────────────────────── */
+.multi-replay-controls-overlay {
+  background: #111113;
+}
+
+/* ─── Fullscreen ─────────────────────────────────────────── */
+.multi-replay-wrapper:fullscreen {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  display: flex;
+  flex-direction: column;
+}
+
+.multi-replay-wrapper:fullscreen .multi-replay-layout {
+  flex: 1;
+  min-height: 0;
+}
+
+.multi-replay-wrapper:fullscreen .multi-replay-main {
+  display: flex;
+  align-items: center;
+}
+
+.multi-replay-wrapper:fullscreen .multi-replay-controls-overlay {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.85));
+  padding-top: 2rem;
+  z-index: 10;
+}
+
+.multi-replay-wrapper:fullscreen .stream-player-video-wrap {
+  aspect-ratio: unset;
+  border-radius: 0;
+}
+
+/* ─── Responsive: stack sidebar below on small screens ───── */
+@media (max-width: 640px) {
+  .multi-replay-layout {
+    flex-direction: column;
+  }
+
+  .multi-replay-sidebar {
+    flex-direction: row;
+    width: 100%;
+    padding: 4px;
+    gap: 4px;
+  }
+
+  .multi-replay-thumb {
+    min-height: 40px;
+  }
+}
