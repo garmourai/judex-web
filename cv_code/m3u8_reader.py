@@ -42,7 +42,6 @@ class M3U8SegmentReader:
     def __init__(
         self,
         segments_dir: str,
-        segment_csvs_dir: str,        # kept for API compat; no longer used
         stop_event: threading.Event,
         poll_interval: float = 0.5,
         m3u8_filename: str = "playlist.m3u8",
@@ -51,7 +50,6 @@ class M3U8SegmentReader:
         Args:
             segments_dir: Directory containing seg_XXXXX.ts files and playlist.m3u8
                           (e.g. /mnt/data/mar30_test/ts_segments_source/1541/)
-            segment_csvs_dir: Kept for API compatibility; ignored internally.
             stop_event: Checked during polling — returns None if set.
             poll_interval: Seconds to sleep between existence checks.
             m3u8_filename: Name of the m3u8 playlist file inside segments_dir.

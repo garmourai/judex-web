@@ -53,6 +53,13 @@ class PipelineConfig:
     # Model files
     tracknet_file: str = ""
     yolo_file: str = ""
+    # TrackNet output heatmap binarization: pixel is "on" if sigmoid/logit output > this (was hardcoded 0.25).
+    tracknet_heatmap_threshold: float = 0.25
+    
+    # Triplet realtime inputs
+    triplet_csv_path: str = ""
+    source_segments_dir: str = ""
+    sink_segments_dir: str = ""
     
     # Processing settings
     match_type: str = "singles"
@@ -64,6 +71,11 @@ class PipelineConfig:
     # When true, creates a stitched correlation video showing both camera views side-by-side
     # with correlation points labeled (A, B, C...). Requires enable_visualization=true and both staging buffers.
     enable_stitched_visualization: bool = False
+    # TrackNet: draw predict_multi_location bboxes on TrackNet-sized frames and write one MP4 per inference batch.
+    enable_tracknet_visualization: bool = False
+    tracknet_visualization_fps: float = 30.0
+    # If None and unique_output_dir is set, uses unique_output_dir/tracknet_overlay.
+    tracknet_visualization_dir: Optional[str] = None
     
     # Video info (populated after setup)
     camera_1_total_frames: int = 0

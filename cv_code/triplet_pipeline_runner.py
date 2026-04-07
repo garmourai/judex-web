@@ -31,40 +31,27 @@ class TripletPipeline:
     Runs the triplet-CSV-based inference pipeline.
 
     Inputs:
-        triplet_csv_path         — path to hls_sync_*_triple.csv (incremental)
-        source_segments_dir      — directory containing seg_XXXXX.ts for source cam
-        source_segment_csvs_dir  — directory containing segment_XXXXX.csv for source cam
-        sink_segments_dir        — same for sink cam
-        sink_segment_csvs_dir    — same for sink cam
         config                   — PipelineConfig (provides camera IDs, calibration,
-                                   output dirs, model paths)
+                                   output dirs, model paths, triplet CSV path,
+                                   and HLS segment directories)
     """
 
     def __init__(
         self,
-        triplet_csv_path: str,
-        source_segments_dir: str,
-        source_segment_csvs_dir: str,
-        sink_segments_dir: str,
-        sink_segment_csvs_dir: str,
         config: PipelineConfig,
         chunk_size: int = 96,
         pacing_seconds: float = 3.2,
-        enable_visualization: bool = False,
-        enable_stitched_visualization: bool = False,
         profiler=None,
         csv_idle_timeout_seconds: float = 15.0,
     ):
-        self._triplet_csv_path = triplet_csv_path
-        self._source_segments_dir = source_segments_dir
-        self._source_segment_csvs_dir = source_segment_csvs_dir
-        self._sink_segments_dir = sink_segments_dir
-        self._sink_segment_csvs_dir = sink_segment_csvs_dir
+        self._triplet_csv_path = config.triplet_csv_path
+        self._source_segments_dir = config.source_segments_dir
+        self._sink_segments_dir = config.sink_segments_dir
         self.config = config
         self._chunk_size = chunk_size
         self._pacing_seconds = pacing_seconds
-        self._enable_visualization = enable_visualization
-        self._enable_stitched_visualization = enable_stitched_visualization
+        self._enable_visualization = config.enable_visualization
+        self._enable_stitched_visualization = config.enable_stitched_visualization
         self._profiler = profiler
         self._csv_idle_timeout_seconds = csv_idle_timeout_seconds
 
@@ -110,6 +97,10 @@ class TripletPipeline:
                 f"[{self.config.triplet_source_index_min!s}, {self.config.triplet_source_index_max!s}] "
                 f"(inclusive; debug)"
             )
+        print(
+            f"[TripletPipeline]   TrackNet heatmap threshold: {self.config.tracknet_heatmap_threshold}",
+            flush=True,
+        )
         print(f"[TripletPipeline] {'='*60}")
 
         pipeline_start = time.time()
@@ -152,6 +143,11 @@ class TripletPipeline:
                 batch_size=4,
                 seq_len=8,
                 profiler=None,
+                heatmap_threshold=self.config.tracknet_heatmap_threshold,
+                unique_output_dir=self.config.unique_output_dir,
+                enable_tracknet_visualization=self.config.enable_tracknet_visualization,
+                tracknet_visualization_fps=self.config.tracknet_visualization_fps,
+                tracknet_visualization_dir=self.config.tracknet_visualization_dir,
             )
 
             # Reset events
@@ -207,9 +203,7 @@ class TripletPipeline:
         reader_worker = TripletCSVReaderWorker(
             triplet_csv_path=self._triplet_csv_path,
             source_segments_dir=self._source_segments_dir,
-            source_segment_csvs_dir=self._source_segment_csvs_dir,
             sink_segments_dir=self._sink_segments_dir,
-            sink_segment_csvs_dir=self._sink_segment_csvs_dir,
             camera_1_id=self.config.camera_1_id,
             camera_2_id=self.config.camera_2_id,
             tracknet_buffer_1=self._tracknet_buffer_1,
@@ -300,31 +294,17 @@ class TripletPipeline:
 
 
 def run_triplet_pipeline(
-    triplet_csv_path: str,
-    source_segments_dir: str,
-    source_segment_csvs_dir: str,
-    sink_segments_dir: str,
-    sink_segment_csvs_dir: str,
     config: PipelineConfig,
     chunk_size: int = 96,
     pacing_seconds: float = 3.2,
-    enable_visualization: bool = False,
-    enable_stitched_visualization: bool = False,
     profiler=None,
     csv_idle_timeout_seconds: float = 15.0,
 ) -> bool:
     """Convenience wrapper: create and run a TripletPipeline."""
     pipeline = TripletPipeline(
-        triplet_csv_path=triplet_csv_path,
-        source_segments_dir=source_segments_dir,
-        source_segment_csvs_dir=source_segment_csvs_dir,
-        sink_segments_dir=sink_segments_dir,
-        sink_segment_csvs_dir=sink_segment_csvs_dir,
         config=config,
         chunk_size=chunk_size,
         pacing_seconds=pacing_seconds,
-        enable_visualization=enable_visualization,
-        enable_stitched_visualization=enable_stitched_visualization,
         profiler=profiler,
         csv_idle_timeout_seconds=csv_idle_timeout_seconds,
     )

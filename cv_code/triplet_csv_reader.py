@@ -275,10 +275,8 @@ class TripletCSVReaderWorker:
     def __init__(
         self,
         triplet_csv_path: str,
-        source_segments_dir: str,       # e.g. .../ts_segments_source/1541/
-        source_segment_csvs_dir: str,   # e.g. .../segments_1541/source/
+        source_segments_dir: str,       # e.g. .../ts_segments_source/1541/ (playlist.m3u8 + seg_*.ts)
         sink_segments_dir: str,
-        sink_segment_csvs_dir: str,
         camera_1_id: str,
         camera_2_id: str,
         tracknet_buffer_1: TracknetBuffer,
@@ -299,9 +297,7 @@ class TripletCSVReaderWorker:
     ):
         self._triplet_csv_path = triplet_csv_path
         self._source_segments_dir = source_segments_dir
-        self._source_segment_csvs_dir = source_segment_csvs_dir
         self._sink_segments_dir = sink_segments_dir
-        self._sink_segment_csvs_dir = sink_segment_csvs_dir
         self._camera_1_id = camera_1_id
         self._camera_2_id = camera_2_id
         self._tracknet_buffer_1 = tracknet_buffer_1
@@ -336,6 +332,7 @@ class TripletCSVReaderWorker:
     # ------------------------------------------------------------------
 
     def run(self) -> None:
+        
         print(f"[TripletCSVReader] Starting — csv={self._triplet_csv_path}")
         self._source_index_slice_exhausted = False
         self._slice_matched_row_count = 0
@@ -353,24 +350,34 @@ class TripletCSVReaderWorker:
         # Create segment readers
         self._source_reader = M3U8SegmentReader(
             segments_dir=self._source_segments_dir,
-            segment_csvs_dir=self._source_segment_csvs_dir,
             stop_event=self._stop_event,
             poll_interval=self._poll_interval,
         )
         self._sink_reader = M3U8SegmentReader(
             segments_dir=self._sink_segments_dir,
-            segment_csvs_dir=self._sink_segment_csvs_dir,
             stop_event=self._stop_event,
             poll_interval=self._poll_interval,
+        )
+        print(
+            "[TripletCSVReader] trace: M3U8SegmentReader created "
+            f"(source_dir={self._source_segments_dir!r}, sink_dir={self._sink_segments_dir!r})",
+            flush=True,
         )
 
         try:
             batch_num = 0
+            print("[TripletCSVReader] trace: entering main try / reader loop", flush=True)
 
             while not self._stop_event.is_set() and not (
                 self._force_stop_event is not None and self._force_stop_event.is_set()
             ):
                 batch_start = time.time()
+                print(
+                    f"[TripletCSVReader] trace: batch {batch_num} loop: start "
+                    f"(stop={self._stop_event.is_set()}, force_stop="
+                    f"{self._force_stop_event.is_set() if self._force_stop_event is not None else None})",
+                    flush=True,
+                )
 
                 tb1_size = len(self._tracknet_buffer_1)
                 tb2_size = len(self._tracknet_buffer_2)
@@ -412,9 +419,19 @@ class TripletCSVReaderWorker:
                 is_partial_final = len(rows) < self._chunk_size
 
                 # --- Prepare batch (read frames from .ts segments) ---
+                print(
+                    f"[TripletCSVReader] trace: batch {batch_num} calling _prepare_batch "
+                    f"(rows={len(rows)}, partial_final={is_partial_final})",
+                    flush=True,
+                )
                 prepare_start = time.time()
                 matched = self._prepare_batch(rows, batch_num)
                 prepare_elapsed = time.time() - prepare_start
+                print(
+                    f"[TripletCSVReader] trace: batch {batch_num} _prepare_batch returned "
+                    f"matched={len(matched)} in {prepare_elapsed:.2f}s",
+                    flush=True,
+                )
 
                 tb1_after = len(self._tracknet_buffer_1)
                 tb2_after = len(self._tracknet_buffer_2)
@@ -451,9 +468,18 @@ class TripletCSVReaderWorker:
                     break
 
                 # --- Push batch to both buffers ---
+                print(
+                    f"[TripletCSVReader] trace: batch {batch_num} calling _push_batch "
+                    f"(matched={len(matched)})",
+                    flush=True,
+                )
                 push_start = time.time()
                 self._push_batch(batch_num, matched)
                 push_elapsed = time.time() - push_start
+                print(
+                    f"[TripletCSVReader] trace: batch {batch_num} _push_batch done in {push_elapsed:.2f}s",
+                    flush=True,
+                )
 
                 # Log buffer sizes after push
                 tb1_post = len(self._tracknet_buffer_1)
@@ -482,6 +508,7 @@ class TripletCSVReaderWorker:
                     break
 
         finally:
+            print("[TripletCSVReader] trace: entering finally (cleanup + signal reader done)", flush=True)
             # Always signal downstream that no more frames are coming
             if (
                 self._triplet_source_index_min is not None
