@@ -1,8 +1,10 @@
+import json
 import os
 import time
 import threading
 import csv
-from typing import Optional, Tuple, List, Dict, Set
+from ast import literal_eval
+from typing import Optional, Tuple, List, Dict, Any
 
 import cv2
 
@@ -18,9 +20,159 @@ from .trajectory import (
     merge_trajectories,
     merge_overlapping_trajectories,
     get_best_point_each_frame,
-    create_point_trajectory_mapping_csv,
     cleanup_staging_buffers_from_triangulation,
 )
+
+
+def _load_tracker_points_costs_by_frame(
+    tracker_path: str,
+) -> Dict[int, List[Tuple[Tuple[float, float, float], Dict[str, float]]]]:
+    """
+    Map Original_Frame -> list of (xyz, cost dict) for each valid triangulated point (Visibility==1, non-null).
+    Used only when writing trajectory_selection.jsonl so downstream consumers need not read tracker.csv.
+    """
+    result: Dict[int, List[Tuple[Tuple[float, float, float], Dict[str, float]]]] = {}
+    if not os.path.exists(tracker_path):
+        return result
+    with open(tracker_path, "r", newline="") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            try:
+                of = int(row["Original_Frame"])
+            except (KeyError, ValueError, TypeError):
+                continue
+            try:
+                visibility = int(row["Visibility"])
+            except (ValueError, TypeError):
+                continue
+            if visibility != 1:
+                continue
+            try:
+                x_values = literal_eval(row["X"])
+                y_values = literal_eval(row["Y"])
+                z_values = literal_eval(row["Z"])
+            except (ValueError, SyntaxError):
+                continue
+            f1_values = literal_eval(row.get("Point_Costs_Formula1", "[]"))
+            f2_values = literal_eval(row.get("Point_Costs_Formula2", "[]"))
+            epi_values = literal_eval(row.get("Point_Costs_Epipolar", "[]"))
+            reproj_values = literal_eval(row.get("Point_Costs_Reprojection", "[]"))
+            temporal_values = literal_eval(row.get("Point_Costs_Temporal", "[]"))
+            n = min(len(x_values), len(y_values), len(z_values))
+            for i in range(n):
+                x_3d = float(x_values[i])
+                y_3d = float(y_values[i])
+                z_3d = float(z_values[i])
+                if x_3d == 0 and y_3d == 0 and z_3d == 0:
+                    continue
+                costs: Dict[str, float] = {}
+                if i < len(f1_values):
+                    costs["f1"] = float(f1_values[i])
+                if i < len(f2_values):
+                    costs["f2"] = float(f2_values[i])
+                if i < len(epi_values):
+                    costs["epi"] = float(epi_values[i])
+                if i < len(reproj_values):
+                    costs["reproj"] = float(reproj_values[i])
+                if i < len(temporal_values):
+                    costs["temp"] = float(temporal_values[i])
+                result.setdefault(of, []).append(((x_3d, y_3d, z_3d), costs))
+    return result
+
+
+def _nearest_tracker_costs(
+    frame_points: List[Tuple[Tuple[float, float, float], Dict[str, float]]],
+    x: float,
+    y: float,
+    z: float,
+) -> Optional[Dict[str, float]]:
+    """Match a trajectory point to the closest tracker row point (same segment / float noise)."""
+    if not frame_points:
+        return None
+    best_costs: Optional[Dict[str, float]] = None
+    best_d = float("inf")
+    for (cx, cy, cz), costs in frame_points:
+        d = (cx - x) ** 2 + (cy - y) ** 2 + (cz - z) ** 2
+        if d < best_d:
+            best_d = d
+            best_costs = costs
+    if best_d > 1e-6:
+        return None
+    return best_costs
+
+
+def _append_trajectory_selection_jsonl(
+    correlation_output_dir: str,
+    segment: Tuple[int, int],
+    global_traj_offset: int,
+    frame_decisions: List[Dict[str, Any]],
+) -> Optional[str]:
+    """
+    Append one JSON object per line to trajectory_selection.jsonl (authoritative post-select_best output).
+
+    Each line includes frame_id, global trajectory ids, current_selected_point, current_ignored_points,
+    active_trajectories (with is_selected and optional costs copied from tracker.csv at write time),
+    and counters. Visualization reads only this file (not tracker.csv).
+    """
+    if not frame_decisions:
+        return None
+    tracker_path = os.path.join(correlation_output_dir, "tracker.csv")
+    costs_by_frame = _load_tracker_points_costs_by_frame(tracker_path)
+    path = os.path.join(correlation_output_dir, "trajectory_selection.jsonl")
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+    with open(path, "a", encoding="utf-8") as f:
+        for rec in frame_decisions:
+            local_sel = rec["local_selected_traj_idx"]
+            global_sel = global_traj_offset + local_sel
+            frame_num = int(rec["frame"])
+            frame_pts = costs_by_frame.get(frame_num, [])
+            active = []
+            for c in rec["active_candidates"]:
+                gid = global_traj_offset + c["local_traj_idx"]
+                xf, yf, zf = float(c["x"]), float(c["y"]), float(c["z"])
+                matched = _nearest_tracker_costs(frame_pts, xf, yf, zf) or {}
+                active.append(
+                    {
+                        "trajectory_id": gid,
+                        "x": c["x"],
+                        "y": c["y"],
+                        "z": c["z"],
+                        "is_selected": c["is_selected"],
+                        "costs": matched,
+                    }
+                )
+            selected = next((a for a in active if a["is_selected"]), None)
+            ignored = [a for a in active if not a["is_selected"]]
+            out = {
+                "segment": [segment[0], segment[1]],
+                "frame_id": frame_num,
+                "selected_trajectory_id": global_sel,
+                "current_selected_point": (
+                    {
+                        "x": selected["x"],
+                        "y": selected["y"],
+                        "z": selected["z"],
+                        "costs": selected.get("costs", {}),
+                    }
+                    if selected
+                    else None
+                ),
+                "current_ignored_points": [
+                    {
+                        "trajectory_id": x["trajectory_id"],
+                        "x": x["x"],
+                        "y": x["y"],
+                        "z": x["z"],
+                        "costs": x.get("costs", {}),
+                    }
+                    for x in ignored
+                ],
+                "active_trajectories": active,
+                "num_points_before": rec["num_points_before"],
+                "num_points_dropped": rec["num_points_dropped"],
+            }
+            f.write(json.dumps(out) + "\n")
+    return path
 
 
 def correlation_worker_wrapper(*args, **kwargs):
@@ -472,9 +624,11 @@ def correlation_worker(
             )
             
             # ============ TRAJECTORY MERGING ============
-            # Snapshot after merge steps but *before* get_best_point_each_frame (used for mapping CSV IDs).
+            # Snapshot after merge steps but *before* get_best_point_each_frame (used for global traj IDs in JSON).
             trajectories_for_point_mapping: List = []
             removed_trajectories = []
+            frame_decisions: List[Dict[str, Any]] = []
+            trajectory_jsonl_path: Optional[str] = None
             if len(stored_trajectories) > 0:
                 merge_start = time.time()
 
@@ -491,7 +645,15 @@ def correlation_worker(
                     stored_trajectories,
                     removed_trajectories,
                     filter_stats,
+                    frame_decisions,
                 ) = get_best_point_each_frame(stored_trajectories, segment)
+
+                trajectory_jsonl_path = _append_trajectory_selection_jsonl(
+                    correlation_output_dir,
+                    segment,
+                    global_traj_offset,
+                    frame_decisions,
+                )
 
                 # Write per-frame filter statistics CSV for this segment
                 # Keep a single canonical location under trajectory_output/<segment>/.
@@ -537,23 +699,6 @@ def correlation_worker(
                     )
             # ============ END TRAJECTORY MERGING ============
             
-            # ============ CREATE POINT-TO-TRAJECTORY MAPPING CSV ============
-            kept_global_traj_ids: Optional[Set[int]] = None
-            if trajectories_for_point_mapping:
-                kept_global_traj_ids = set()
-                for traj in stored_trajectories:
-                    idx = trajectories_for_point_mapping.index(traj)
-                    kept_global_traj_ids.add(global_traj_offset + idx)
-
-            mapping_csv_path = create_point_trajectory_mapping_csv(
-                segment=segment,
-                output_dir=correlation_output_dir,
-                stored_trajectories=trajectories_for_point_mapping,
-                global_traj_offset=global_traj_offset,
-                kept_global_traj_ids=kept_global_traj_ids,
-            )
-            # ============ END POINT-TO-TRAJECTORY MAPPING ============
-            
             # Store merged & filtered trajectory data for visualization
             all_trajectory_data[segment] = stored_trajectories
             
@@ -578,9 +723,9 @@ def correlation_worker(
                     metadata=seg_meta,
                 )
             print(
-                f"[CorrelationWorker]    ├─ trajectory (create/merge/filter/map): {t_trajectory:.3f}s  "
+                f"[CorrelationWorker]    ├─ trajectory (create/merge/filter/json): {t_trajectory:.3f}s  "
                 f"raw={original_count} final={len(stored_trajectories)} removed={len(removed_trajectories)} "
-                f"{tw}x{th} mapping={'yes' if mapping_csv_path else 'no'}",
+                f"{tw}x{th} selection_jsonl={'yes' if trajectory_jsonl_path else 'no'}",
                 flush=True,
             )
             # ============ END TRAJECTORY CREATION ============

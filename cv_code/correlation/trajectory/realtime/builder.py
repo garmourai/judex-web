@@ -4,7 +4,6 @@ Real-Time Trajectory Creator Module
 
 import os
 import csv
-import numpy as np
 from ast import literal_eval
 from typing import Dict, List, Tuple, Optional
 
@@ -22,10 +21,6 @@ def process_csv_realtime(file_path: str, result_dict: Dict):
             z_values = literal_eval(row['Z'])
             coordinates = list(zip(x_values, y_values, z_values))
             result_dict[original_frame] = coordinates
-
-
-def point_in_bounds(point: np.ndarray, min_bound: np.ndarray, max_bound: np.ndarray) -> bool:
-    return np.all(point >= min_bound) and np.all(point <= max_bound)
 
 
 def create_trajectories_realtime(
@@ -52,20 +47,6 @@ def create_trajectories_realtime(
     if not os.path.exists(frame_segment_folder):
         os.makedirs(frame_segment_folder)
 
-    if os.path.exists(world_points_file):
-        try:
-            world_points = np.loadtxt(world_points_file, comments="#", usecols=(-3, -2, -1))
-        except Exception:
-            world_points = np.loadtxt(world_points_file, comments="#")
-        if world_points.ndim == 1:
-            world_points = world_points.reshape(1, -1)
-        min_bound = world_points.min(axis=0)
-        max_bound = world_points.max(axis=0)
-    else:
-        print(f"[CorrelationWorker]   ⚠️  World points file not found: {world_points_file}, using default bounds", flush=True)
-        min_bound = np.array([-10, -10, 0])
-        max_bound = np.array([20, 20, 10])
-
     tracker_csv_path = os.path.join(output_dir, "tracker.csv")
     if not os.path.exists(tracker_csv_path):
         print(f"[CorrelationWorker]   ⚠️  Tracker CSV not found: {tracker_csv_path}", flush=True)
@@ -88,8 +69,7 @@ def create_trajectories_realtime(
     for frame in range(start_frame, end_frame + 1):
         if frame not in data_dict:
             continue
-        coords_all = data_dict[frame]
-        coords = [pt for pt in coords_all if point_in_bounds(np.array(pt), min_bound, max_bound)]
+        coords = data_dict[frame]
         if len(coords) > 0:
             frames_with_detections += 1
             total_detections += len(coords)
@@ -98,6 +78,24 @@ def create_trajectories_realtime(
     newly_stored = tree.finalize_for_handoff(end_frame, frame_gap_threshold=10)
     next_context = tree.get_handoff_context(frame_gap_threshold=10)
     stored_trajectories = tree.get_stored_trajectories()
+    # if stored_trajectories:
+    #     print(
+    #         f"[CorrelationWorker]   [Tree] Stored trajectories summary: count={len(stored_trajectories)}",
+    #         flush=True,
+    #     )
+    #     for tid, traj in enumerate(stored_trajectories):
+    #         if len(traj.detections) == 0:
+    #             continue
+    #         frames = sorted(traj.detections.keys())
+    #         first_f, last_f = frames[0], frames[-1]
+    #         first_det = traj.detections[first_f]
+    #         last_det = traj.detections[last_f]
+    #         print(
+    #             f"[CorrelationWorker]      traj={tid} frames={first_f}->{last_f} points={len(frames)} "
+    #             f"start=({first_det.x:.4f},{first_det.y:.4f},{first_det.z:.4f}) "
+    #             f"end=({last_det.x:.4f},{last_det.y:.4f},{last_det.z:.4f})",
+    #             flush=True,
+    #         )
 
     detections_per_frame = {}
     for traj_id, trajectory in enumerate(stored_trajectories):

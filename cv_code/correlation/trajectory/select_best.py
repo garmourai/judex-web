@@ -58,11 +58,36 @@ def find_previous_trajectory(
     return best_trajectory, best_last_frame
 
 
+def _active_candidates_payload(
+    active_trajectories: List[Tuple[int, Trajectory]],
+    frame_num: int,
+    selected_traj_idx: int,
+) -> List[Dict[str, Any]]:
+    """One entry per active trajectory at frame_num with local index and is_selected."""
+    out: List[Dict[str, Any]] = []
+    for idx, traj in active_trajectories:
+        if frame_num not in traj.detections:
+            continue
+        det = traj.detections[frame_num]
+        out.append(
+            {
+                "local_traj_idx": idx,
+                "x": float(det.x),
+                "y": float(det.y),
+                "z": float(det.z),
+                "is_selected": idx == selected_traj_idx,
+            }
+        )
+    return out
+
+
 def get_best_point_each_frame(
     trajectories: List[Trajectory],
     segment: Tuple[int, int],
-) -> Tuple[List[Trajectory], List[Trajectory], List[Dict[str, Any]]]:
+) -> Tuple[List[Trajectory], List[Trajectory], List[Dict[str, Any]], List[Dict[str, Any]]]:
     _, end_frame = segment
+    per_frame_stats: List[Dict[str, Any]] = []
+    per_frame_decisions: List[Dict[str, Any]] = []
     frame_to_trajectories: Dict[int, List[Tuple[int, Detection]]] = {}
     for traj_idx, trajectory in enumerate(trajectories):
         for frame_num, detection in trajectory.detections.items():
@@ -70,7 +95,6 @@ def get_best_point_each_frame(
 
     frames_to_process = sorted([f for f in frame_to_trajectories.keys() if f <= end_frame - LAST_FRAMES_TO_SKIP])
     trajectories_to_remove = set()
-    per_frame_stats: List[Dict[str, Any]] = []
 
     for frame_num in frames_to_process:
         traj_detections = frame_to_trajectories.get(frame_num, [])
@@ -88,6 +112,17 @@ def get_best_point_each_frame(
             if frame_num in selected_traj.detections:
                 det = selected_traj.detections[frame_num]
                 per_frame_stats.append({"frame": frame_num, "picked_traj_idx": selected_traj_idx, "picked_x": det.x, "picked_y": det.y, "picked_z": det.z, "points_before": points_before, "points_dropped": 0})
+                per_frame_decisions.append(
+                    {
+                        "frame": frame_num,
+                        "local_selected_traj_idx": selected_traj_idx,
+                        "num_points_before": points_before,
+                        "num_points_dropped": 0,
+                        "active_candidates": _active_candidates_payload(
+                            active_trajectories, frame_num, selected_traj_idx
+                        ),
+                    }
+                )
             continue
 
         traj_lengths: Dict[int, int] = {idx: get_trajectory_length(traj) for idx, traj in active_trajectories}
@@ -111,7 +146,29 @@ def get_best_point_each_frame(
         selected_traj = trajectories[selected_traj_idx]
         if frame_num in selected_traj.detections:
             det = selected_traj.detections[frame_num]
-            per_frame_stats.append({"frame": frame_num, "picked_traj_idx": selected_traj_idx, "picked_x": det.x, "picked_y": det.y, "picked_z": det.z, "points_before": points_before, "points_dropped": max(points_before - 1, 0)})
+            dropped = max(points_before - 1, 0)
+            per_frame_stats.append(
+                {
+                    "frame": frame_num,
+                    "picked_traj_idx": selected_traj_idx,
+                    "picked_x": det.x,
+                    "picked_y": det.y,
+                    "picked_z": det.z,
+                    "points_before": points_before,
+                    "points_dropped": dropped,
+                }
+            )
+            per_frame_decisions.append(
+                {
+                    "frame": frame_num,
+                    "local_selected_traj_idx": selected_traj_idx,
+                    "num_points_before": points_before,
+                    "num_points_dropped": dropped,
+                    "active_candidates": _active_candidates_payload(
+                        active_trajectories, frame_num, selected_traj_idx
+                    ),
+                }
+            )
 
         for idx, _ in active_trajectories:
             if idx != selected_traj_idx:
@@ -119,7 +176,7 @@ def get_best_point_each_frame(
 
     filtered_trajectories = [traj for idx, traj in enumerate(trajectories) if idx not in trajectories_to_remove]
     removed_trajectories = [traj for idx, traj in enumerate(trajectories) if idx in trajectories_to_remove]
-    return filtered_trajectories, removed_trajectories, per_frame_stats
+    return filtered_trajectories, removed_trajectories, per_frame_stats, per_frame_decisions
 
 
 def _select_by_centroid(

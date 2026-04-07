@@ -144,6 +144,10 @@ class DetectionTree:
                 queue = DetectionQueue(self.frame_width, self.frame_height)
                 queue.push((coordinates, frame_number), None)
                 self.queues.append(queue)
+                # print(
+                #     f"[CorrelationWorker]   [Tree] New queue created at frame={frame_number} "
+                #     f"point=({coordinates[0]:.4f},{coordinates[1]:.4f},{coordinates[2]:.4f})"
+                # )
 
     def process_queues(self, frame_number):
         if len(self.queues) == 0:
@@ -156,6 +160,10 @@ class DetectionTree:
                     if queue.trajectory_index is None:
                         queue.trajectory_index = self.trajectory_count
                         self.trajectories[queue.trajectory_index] = Trajectory()
+                        # print(
+                        #     f"[CorrelationWorker]   [Tree] Created trajectory id={queue.trajectory_index} "
+                        #     f"from queue_len={len(queue.detections)} at frame={frame_number}"
+                        # )
                         self.trajectory_count += 1
                     if self.trajectories[queue.trajectory_index] is None:
                         self.trajectories[queue.trajectory_index] = Trajectory()
@@ -175,6 +183,13 @@ class DetectionTree:
                         self.filled_frames[i] = 1
                     for i in list(var_trajectory.net_hit_frames.keys()):
                         self.net_hit_frames[i] = 1
+                    first_f = min(var_trajectory.detections.keys())
+                    last_f = max(var_trajectory.detections.keys())
+                    # print(
+                    #     f"[CorrelationWorker]   [Tree] Stored trajectory id={key} "
+                    #     f"frames={first_f}->{last_f} points={len(var_trajectory.detections)} "
+                    #     f"reason={'end_frame' if frame_number == self.end_frame else 'frame_diff'}"
+                    # )
                     self.stored_trajectories.append(var_trajectory)
                     self.trajectories[key] = None
 
@@ -262,6 +277,12 @@ class DetectionTree:
                     self.filled_frames[i] = 1
                 for i in list(traj.net_hit_frames.keys()):
                     self.net_hit_frames[i] = 1
+                first_f = min(traj.detections.keys())
+                last_f = max(traj.detections.keys())
+                # print(
+                #     f"[CorrelationWorker]   [Tree] Finalize-handoff store trajectory id={key} "
+                #     f"frames={first_f}->{last_f} points={len(traj.detections)} frame_gap={frame_gap}"
+                # )
                 self.stored_trajectories.append(traj)
                 newly_stored.append(traj)
                 self.trajectories[key] = None

@@ -1,10 +1,10 @@
 """Cam1 overlay MP4s from triangulated 3D points (reprojection onto staging-buffer frames)."""
 
+import json
 import os
 import pickle
 import time
-import csv
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
 
@@ -12,15 +12,81 @@ from ...inference.inference import get_trajectory_color
 from ..correlation_worker_utils import load_fid_to_stream_from_dist_tracker_csv
 from .utils import reproject_point
 
-# Overlay text: white on dark panels; scales are 3× prior defaults (0.5→1.5, etc.)
+# Overlay text: white on dark panels. Scales/layout are 25% of prior (75% smaller than last size).
 _VIZ_TEXT_COLOR = (255, 255, 255)
 _VIZ_FONT = cv2.FONT_HERSHEY_SIMPLEX
-_VIZ_THICKNESS = 3
-_VIZ_SCALE_HUD = 1.5
-_VIZ_SCALE_LABEL = 1.5
-_VIZ_SCALE_COST_TITLE = 1.65
-_VIZ_SCALE_COST_LINE = 1.35
-_VIZ_LINE_HEIGHT = 60
+_VIZ_THICKNESS = 1
+_VIZ_SCALE_HUD = 0.375
+_VIZ_SCALE_LABEL = 0.375
+_VIZ_SCALE_COST_TITLE = 0.4125
+_VIZ_SCALE_COST_LINE = 0.3375
+_VIZ_LINE_HEIGHT = 15
+
+
+def _load_trajectory_selection_jsonl(
+    jsonl_path: str, frame_ranges: List[Tuple[int, int]]
+) -> Dict[int, Dict[str, Any]]:
+    """Load post-select_best records; last line wins if frame_id repeats."""
+    by_frame: Dict[int, Dict[str, Any]] = {}
+    if not os.path.exists(jsonl_path):
+        return by_frame
+    with open(jsonl_path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            fid = int(obj.get("frame_id", -1))
+            if frame_ranges and not any(s <= fid <= e for s, e in frame_ranges):
+                continue
+            by_frame[fid] = obj
+    return by_frame
+
+
+def _build_traj_maps_from_selection(
+    selection_by_frame: Dict[int, Dict[str, Any]],
+) -> Tuple[Dict, Dict, Dict]:
+    frame_trajectory_map: Dict[int, List[Tuple[int, Tuple[float, float, float]]]] = {}
+    trajectory_history: Dict[int, List[Tuple[int, Tuple[float, float, float]]]] = {}
+    frame_removed_trajectory_map: Dict[int, List[Tuple[float, float, float]]] = {}
+    for fid, obj in selection_by_frame.items():
+        for cand in obj.get("active_trajectories", []):
+            if cand.get("is_selected"):
+                tid = int(cand["trajectory_id"])
+                coords = (float(cand["x"]), float(cand["y"]), float(cand["z"]))
+                frame_trajectory_map.setdefault(fid, []).append((tid, coords))
+                trajectory_history.setdefault(tid, []).append((fid, coords))
+        for ign in obj.get("current_ignored_points", []):
+            coords = (float(ign["x"]), float(ign["y"]), float(ign["z"]))
+            frame_removed_trajectory_map.setdefault(fid, []).append(coords)
+    return frame_trajectory_map, trajectory_history, frame_removed_trajectory_map
+
+
+def _build_frame_data_and_costs_from_selection(
+    selection_by_frame: Dict[int, Dict[str, Any]],
+) -> Tuple[Dict[int, Tuple], Dict[int, Dict[str, List[float]]]]:
+    """
+    Build per-frame point lists and cost component lists from trajectory_selection.jsonl only.
+    Each active_trajectories entry may include a 'costs' dict (f1, f2, epi, reproj, temp).
+    """
+    all_frame_data: Dict[int, Tuple] = {}
+    frame_costs_map: Dict[int, Dict[str, List[float]]] = {}
+    for fid, obj in selection_by_frame.items():
+        coords_list: List[Tuple[float, float, float]] = []
+        lists: Dict[str, List[float]] = {"f1": [], "f2": [], "epi": [], "reproj": [], "temp": []}
+        for c in obj.get("active_trajectories", []):
+            coords_list.append((float(c["x"]), float(c["y"]), float(c["z"])))
+            co = c.get("costs") or {}
+            for key in ("f1", "f2", "epi", "reproj", "temp"):
+                if key in co:
+                    lists[key].append(float(co[key]))
+        if coords_list:
+            all_frame_data[fid] = (None, coords_list)
+        frame_costs_map[fid] = lists
+    return all_frame_data, frame_costs_map
 
 
 def create_visualization_from_triangulation(
@@ -44,7 +110,7 @@ def create_visualization_from_triangulation(
 
     Args:
         frame_segments: List of (start_frame, end_frame) tuples that were triangulated
-        output_dir: Output directory for videos; also used for tracker.csv if tracker_base_dir is not set
+        output_dir: Output directory for videos; also used to locate trajectory_selection.jsonl if tracker_base_dir is not set
         staging_buffer_1: StagingBuffer for camera 1 to get frames (or VideoFrameProvider for offline flow)
         camera_1_cam_path: Path to camera 1 calibration pickle file
         camera_1_id: Camera 1 identifier
@@ -55,8 +121,8 @@ def create_visualization_from_triangulation(
         removed_trajectory_data: Dict mapping segment tuple to list of removed trajectories (drawn as big black circles)
         trail_length: Number of past frames to show in trajectory trail (default: 10)
         show_trajectory_labels: Whether to show trajectory ID text labels (default: True)
-        tracker_base_dir: If set, read tracker.csv files from this directory (e.g. read dir when using separate write dir)
-        camera_1_csv_path: Path to camera 1 dist_tracker.csv (for legacy StagingBuffer frame→stream lookup)
+        tracker_base_dir: If set, read trajectory_selection.jsonl from this directory (e.g. correlation output read path)
+        camera_1_csv_path: Path to camera 1 dist_tracker.csv (StagingBuffer frame→stream index mapping; not used with OriginalFrameBuffer)
     """
     visualization_start_time = time.time()
     # Load camera calibration
@@ -64,79 +130,34 @@ def create_visualization_from_triangulation(
         camera_1 = pickle.load(f)
     print(f"[CorrelationWorker]    📷 Loaded camera 1 calibration from {camera_1_cam_path}")
 
-    # Build frame-to-trajectory mapping from persisted mapping CSV
-    # frame_trajectory_map: frame_idx -> [(traj_id, (x, y, z)), ...]
-    frame_trajectory_map = {}
-    # trajectory_history: traj_id -> [(frame_num, (x, y, z)), ...] sorted by frame
-    trajectory_history = {}
-    frame_removed_trajectory_map = {}
+    frame_trajectory_map: Dict[int, List] = {}
+    trajectory_history: Dict[int, List] = {}
+    frame_removed_trajectory_map: Dict[int, List] = {}
+    _data_dir = tracker_base_dir if tracker_base_dir is not None else output_dir
+    frame_ranges = frame_segments or []
 
-    # Collect all frames/coords/trajectory IDs and costs from mapping CSV
-    all_frame_data = {}  # frame_id -> (frame_image, [list of 3d_coords])
-    frame_costs_map = {}  # frame_id -> cost lists from persisted mapping columns
-    _tracker_dir = tracker_base_dir if tracker_base_dir is not None else output_dir
+    jsonl_path = os.path.join(_data_dir, "trajectory_selection.jsonl")
+    selection_by_frame = _load_trajectory_selection_jsonl(jsonl_path, frame_ranges)
+    if not selection_by_frame:
+        print(
+            f"[CorrelationWorker]    ❌ trajectory_selection.jsonl missing or empty (required for visualization): "
+            f"{jsonl_path}"
+        )
+        return
 
-    mapping_csv_path = os.path.join(_tracker_dir, "points_trajectory_mapping.csv")
-    if not os.path.exists(mapping_csv_path):
-        print(f"[CorrelationWorker]    ⚠️  Mapping CSV not found: {mapping_csv_path}")
-    else:
-        frame_ranges = frame_segments or []
-        with open(mapping_csv_path, "r", newline="") as f:
-            reader = csv.DictReader(f)
-            for row in reader:
-                try:
-                    frame_num = int(row["Frame"])
-                    if frame_ranges and not any(s <= frame_num <= e for s, e in frame_ranges):
-                        continue
-                    x_3d = float(row["X"])
-                    y_3d = float(row["Y"])
-                    z_3d = float(row["Z"])
-                    traj_id = int(float(str(row["Trajectory_ID"]).strip()))
-                    kept_cell = str(row["Kept_After_Filter"]).strip()
-                except (ValueError, KeyError, TypeError):
-                    continue
-                coords = (x_3d, y_3d, z_3d)
-
-                if frame_num not in all_frame_data:
-                    all_frame_data[frame_num] = (None, [])
-                _, coords_list = all_frame_data[frame_num]
-                coords_list.append(coords)
-
-                # points_trajectory_mapping.csv: Trajectory_ID -1 = unmatched; Kept_After_Filter 1/0 for matched
-                if traj_id < 0 or kept_cell == "0":
-                    frame_removed_trajectory_map.setdefault(frame_num, []).append(coords)
-                elif kept_cell == "1":
-                    frame_trajectory_map.setdefault(frame_num, []).append((traj_id, coords))
-                    trajectory_history.setdefault(traj_id, []).append((frame_num, coords))
-                else:
-                    continue
-
-                frame_costs_map.setdefault(
-                    frame_num, {"f1": [], "f2": [], "epi": [], "reproj": [], "temp": []}
-                )
-                for col, key in (
-                    ("Cost_Formula1", "f1"),
-                    ("Cost_Formula2", "f2"),
-                    ("Cost_Epipolar", "epi"),
-                    ("Cost_Reprojection", "reproj"),
-                    ("Cost_Temporal", "temp"),
-                ):
-                    raw = row.get(col, "")
-                    if raw is None or str(raw).strip() == "":
-                        continue
-                    try:
-                        frame_costs_map[frame_num][key].append(float(raw))
-                    except ValueError:
-                        continue
+    frame_trajectory_map, trajectory_history, frame_removed_trajectory_map = _build_traj_maps_from_selection(
+        selection_by_frame
+    )
+    all_frame_data, frame_costs_map = _build_frame_data_and_costs_from_selection(selection_by_frame)
+    print(
+        f"[CorrelationWorker]    ✅ Loaded trajectory_selection.jsonl: {jsonl_path} "
+        f"({len(selection_by_frame)} frame records, {len(trajectory_history)} trajectories)"
+    )
 
     for traj_id in trajectory_history:
         trajectory_history[traj_id].sort(key=lambda x: x[0])
-    print(
-        f"[CorrelationWorker]    ✅ Built trajectory map from mapping CSV: "
-        f"{len(trajectory_history)} trajectories"
-    )
 
-    # frame_id -> per-camera stream index (legacy StagingBuffer / overlay labels)
+    # frame_id -> per-camera stream index (StagingBuffer / overlay labels)
     from ...triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
 
     _use_original_buffer = isinstance(staging_buffer_1, _OriginalFrameBuffer)
@@ -170,6 +191,7 @@ def create_visualization_from_triangulation(
     all_frame_data = {
         fnwd: value for fnwd, value in all_frame_data.items() if fnwd in frame_id_to_cam_stream
     }
+    frame_costs_map = {k: frame_costs_map[k] for k in all_frame_data.keys() if k in frame_costs_map}
     if original_frame_count != len(all_frame_data):
         print(
             f"[CorrelationWorker]    ℹ️  Filtered frames without mapping: "
@@ -179,16 +201,14 @@ def create_visualization_from_triangulation(
     # Count total raw points
     total_raw_points = sum(len(coords_list) for _, coords_list in all_frame_data.values())
     print(
-        f"[CorrelationWorker]    📊 Loaded {total_raw_points} raw 3D points from points_trajectory_mapping.csv (after mapping filter)"
+        f"[CorrelationWorker]    📊 Loaded {total_raw_points} raw 3D point positions from trajectory_selection.jsonl"
     )
 
     if len(all_frame_data) == 0:
-        print(f"[CorrelationWorker]    ⚠️  No frame data found in tracker CSVs")
-        return
-
-    # Get per-camera frame indices (using mapping) and take frames from staging buffers
-    if len(all_frame_data) == 0:
-        print(f"[CorrelationWorker]    ⚠️  No frame data found in tracker CSVs after applying mapping")
+        print(
+            f"[CorrelationWorker]    ⚠️  No frame data after applying frame_id→camera_stream mapping "
+            f"(check trajectory_selection.jsonl vs dist_tracker)"
+        )
         return
 
     global_frame_indices = set(all_frame_data.keys())
@@ -374,13 +394,13 @@ def create_visualization_from_triangulation(
 
         # ===== Draw FPS and frame info overlay =====
         # Dark semi-transparent patch so white HUD text stays readable
-        overlay_height = 310
+        overlay_height = 78
         overlay = frame_img.copy()
-        hud_w = 900
+        hud_w = 400
         cv2.rectangle(overlay, (10, 10), (10 + hud_w, 10 + overlay_height), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.55, frame_img, 0.45, 0, frame_img)
 
-        y_offset = 90
+        y_offset = 23
         line_height = _VIZ_LINE_HEIGHT
 
         # Line 1: FPS and Frame number
@@ -442,9 +462,9 @@ def create_visualization_from_triangulation(
             else:
                 cost_lines.append(f"{label}: []")
         right_pad = 15
-        box_w = 432
-        cost_line_spacing = 18
-        box_h = 24 + 5 * cost_line_spacing
+        box_w = 280
+        cost_line_spacing = 5
+        box_h = 6 + 5 * cost_line_spacing
         x2 = frame_img.shape[1] - right_pad
         x1 = max(0, x2 - box_w)
         y1 = 10
@@ -455,7 +475,7 @@ def create_visualization_from_triangulation(
         cv2.putText(
             frame_img,
             "Propagated Costs",
-            (x1 + 12, y1 + 24),
+            (x1 + 3, y1 + 6),
             _VIZ_FONT,
             _VIZ_SCALE_COST_TITLE,
             _VIZ_TEXT_COLOR,
@@ -465,7 +485,7 @@ def create_visualization_from_triangulation(
             cv2.putText(
                 frame_img,
                 line,
-                (x1 + 12, y1 + 24 + cost_line_spacing * (i + 1)),
+                (x1 + 3, y1 + 6 + cost_line_spacing * (i + 1)),
                 _VIZ_FONT,
                 _VIZ_SCALE_COST_LINE,
                 _VIZ_TEXT_COLOR,
