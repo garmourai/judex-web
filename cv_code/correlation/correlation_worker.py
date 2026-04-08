@@ -1,12 +1,11 @@
 import json
 import os
+import sys
 import time
 import threading
 import csv
 from ast import literal_eval
 from typing import Optional, Tuple, List, Dict, Any
-
-import cv2
 
 from .visualization import (
     append_stitched_segment_to_video,
@@ -14,13 +13,12 @@ from .visualization import (
     load_selected_pair_costs_from_match_decisions,
     create_visualization_from_triangulation,
 )
-from .correlation_worker_utils import load_fid_to_stream_from_dist_tracker_csv
 from .trajectory import (
     create_trajectories_realtime,
     merge_trajectories,
     merge_overlapping_trajectories,
     get_best_point_each_frame,
-    cleanup_staging_buffers_from_triangulation,
+    LAST_FRAMES_TO_SKIP,
 )
 
 
@@ -193,8 +191,7 @@ def correlation_worker(
         stop_event: threading.Event,
         profiler=None,
         check_interval: float = 0.05,  # Check for new frames every 0.05 seconds
-        staging_buffer_1=None,  # Staging buffer for camera 1 (to get frames for visualization)
-        staging_buffer_2=None,  # Staging buffer for camera 2 (to get frames for visualization)
+        original_buffer=None,  # OriginalFrameBuffer: shared cam1+cam2 frames for viz (triplet pipeline)
         enable_visualization: bool = False,  # Only create videos when True
         enable_stitched_visualization: bool = False,  # Only create stitched correlation video when True
         inference_done_event: Optional[threading.Event] = None,  # Set when inference is finished
@@ -224,7 +221,6 @@ def correlation_worker(
         original_frame_width: Camera-1 original frame width from PipelineConfig
         original_frame_height: Camera-1 original frame height from PipelineConfig
     """
-    import sys
     sys.stdout.flush()
     print("[CorrelationWorker] " + "=" * 60, flush=True)
     print("[CorrelationWorker] 🔗 Correlation worker thread started", flush=True)
@@ -245,7 +241,6 @@ def correlation_worker(
         )
 
     # Import here to avoid circular imports
-    import sys
     print("[CorrelationWorker]    🔄 Importing do_pairwise_correlation_realtime...", flush=True)
     sys.stdout.flush()
     from .realtime_pairwise_correlation import do_pairwise_correlation_realtime
@@ -254,10 +249,7 @@ def correlation_worker(
     
     # Track processed segments to avoid duplicates
     processed_segments = set()
-    
-    # Single stitched correlation video: append per segment, finalize on exit
-    stitched_writer_state = {}
-    
+
     # Track last processed frame (common for both cameras)
     last_processed_frame = -1
     
@@ -326,7 +318,6 @@ def correlation_worker(
         if len(frames_cam1) == 0 or len(frames_cam2) == 0:
             if check_count <= 3:
                 print(f"[CorrelationWorker]    ⏳ CSV files are empty (cam1: {len(frames_cam1)} frames, cam2: {len(frames_cam2)} frames)", flush=True)
-                import sys
                 sys.stdout.flush()
             time.sleep(check_interval)
             continue
@@ -518,22 +509,19 @@ def correlation_worker(
                 flush=True,
             )
 
-            # Optional: stitched side-by-side correlation video immediately after pairwise
-            if enable_stitched_visualization and staging_buffer_1 is not None and staging_buffer_2 is not None:
+            # Optional: stitched side-by-side correlation video (shared OriginalFrameBuffer only)
+            if enable_stitched_visualization and original_buffer is not None:
                 stitched_t0 = time.time()
-                fnwd_to_original_cam1 = load_fid_to_stream_from_dist_tracker_csv(
-                    camera_1_csv_path
-                )
-                fnwd_to_original_cam2 = load_fid_to_stream_from_dist_tracker_csv(
-                    camera_2_csv_path
-                )
-                s0, s1 = segment[0], segment[1]
-                if not fnwd_to_original_cam1:
+                from ..triplet_csv_reader import OriginalFrameBuffer as _OFB
+                if not isinstance(original_buffer, _OFB):
+                    print(
+                        "[CorrelationWorker]    ⚠️  Stitched viz skipped: requires OriginalFrameBuffer",
+                        flush=True,
+                    )
+                else:
+                    s0, s1 = segment[0], segment[1]
                     fnwd_to_original_cam1 = {f: f for f in range(s0, s1 + 1)}
-                if not fnwd_to_original_cam2:
-                    fnwd_to_original_cam2 = {f: f for f in range(s0, s1 + 1)}
-
-                if fnwd_to_original_cam1 and fnwd_to_original_cam2:
+                    fnwd_to_original_cam2 = fnwd_to_original_cam1
                     correlated_pairs = load_correlated_pairs_from_tracker_csvs_realtime(
                         output_dir=correlation_output_dir,
                         frame_segments=[segment],
@@ -550,8 +538,7 @@ def correlation_worker(
                         output_dir=correlation_output_dir,
                         camera_1_id=camera_1_id,
                         camera_2_id=camera_2_id,
-                        staging_buffer_1=staging_buffer_1,
-                        staging_buffer_2=staging_buffer_2,
+                        original_buffer=original_buffer,
                         fnwd_to_original_cam1=fnwd_to_original_cam1,
                         fnwd_to_original_cam2=fnwd_to_original_cam2,
                         correlated_pairs_per_frame=correlated_pairs,
@@ -564,12 +551,6 @@ def correlation_worker(
                             f"filename suffix _nodetections, segment {segment[0]}-{segment[1]}",
                             flush=True,
                         )
-                else:
-                    print(
-                        "[CorrelationWorker]    ⚠️  Missing FID→stream maps for stitched viz "
-                        f"(cam1={len(fnwd_to_original_cam1)}, cam2={len(fnwd_to_original_cam2)})",
-                        flush=True,
-                    )
                 t_viz_stitched = time.time() - stitched_t0
                 if profiler:
                     profiler.record(
@@ -593,8 +574,8 @@ def correlation_worker(
             tw, th = original_frame_width, original_frame_height
             if tw is None or th is None:
                 from ..triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
-                if isinstance(staging_buffer_1, _OriginalFrameBuffer):
-                    bw, bh = staging_buffer_1.get_original_frame_size()
+                if isinstance(original_buffer, _OriginalFrameBuffer):
+                    bw, bh = original_buffer.get_original_frame_size()
                     if bw is not None and bh is not None:
                         tw, th = int(bw), int(bh)
             if tw is None or th is None:
@@ -604,7 +585,7 @@ def correlation_worker(
                     "or ensure OriginalFrameBuffer has decoded at least one frame."
                 )
             tw, th = int(tw), int(th)
-            stored_trajectories, detections_per_frame, traj_folder, trajectory_context = create_trajectories_realtime(
+            stored_trajectories, _, traj_folder, trajectory_context = create_trajectories_realtime(
                 segment=segment,
                 output_dir=correlation_output_dir,
                 camera_1_id=camera_1_id,
@@ -621,8 +602,6 @@ def correlation_worker(
             )
             
             # ============ TRAJECTORY MERGING ============
-            # Snapshot after merge steps but *before* get_best_point_each_frame (track_id assigned just above).
-            trajectories_for_point_mapping: List = []
             removed_trajectories = []
             frame_decisions: List[Dict[str, Any]] = []
             trajectory_jsonl_path: Optional[str] = None
@@ -634,8 +613,6 @@ def correlation_worker(
 
                 # Step 2: Merge overlapping trajectories (1–4 overlapping frames)
                 stored_trajectories = merge_overlapping_trajectories(stored_trajectories)
-
-                trajectories_for_point_mapping = list(stored_trajectories)
 
                 for traj in stored_trajectories:
                     traj.track_id = next_track_id
@@ -728,16 +705,19 @@ def correlation_worker(
             # ============ END TRAJECTORY CREATION ============
             
             # Optional: cam1 overlay videos (timed separately)
-            if enable_visualization and staging_buffer_1 is not None:
+            if enable_visualization and original_buffer is not None:
                 viz_overlay_t0 = time.time()
+                viz_segment = (
+                    max(0, segment[0] - LAST_FRAMES_TO_SKIP),
+                    segment[1],
+                )
                 create_visualization_from_triangulation(
-                    frame_segments=[segment],
+                    frame_segments=[viz_segment],
                     output_dir=correlation_output_dir,
-                    staging_buffer_1=staging_buffer_1,
+                    original_buffer=original_buffer,
                     camera_1_cam_path=camera_1_cam_path,
                     camera_1_id=camera_1_id,
                     camera_1_csv_path=camera_1_csv_path,
-                    staging_buffer_2=staging_buffer_2,
                     profiler=profiler,
                     trajectory_data=all_trajectory_data,  # Kept trajectories
                     removed_trajectory_data={segment: removed_trajectories}
@@ -760,27 +740,29 @@ def correlation_worker(
                     flush=True,
                 )
             
-            # Cleanup staging buffers after visualization (or if visualization disabled)
-            if staging_buffer_1 is not None:
-                # judex pipeline: OriginalFrameBuffer cleared by batch number
+            # Cleanup OriginalFrameBuffer after visualization (or when viz disabled but buffer present)
+            if original_buffer is not None:
                 from ..triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
-                _use_original_buffer = isinstance(staging_buffer_1, _OriginalFrameBuffer)
-
-                if _use_original_buffer:
-                    # Reader batch_num is 0,1,2,... per triplet chunk — NOT max_frame // chunk_size.
-                    # Clear every reader batch whose max Source_Index is within this segment so
-                    # partial trailing chunks are kept until a later segment.
+                if not isinstance(original_buffer, _OriginalFrameBuffer):
+                    print(
+                        "[CorrelationWorker]    ⚠️  Buffer cleanup skipped: expected OriginalFrameBuffer",
+                        flush=True,
+                    )
+                else:
                     end_frame_processed = segment[1]
-                    orig_size_before = len(staging_buffer_1)
+                    clear_upto = end_frame_processed - LAST_FRAMES_TO_SKIP
+                    if inference_done_event is not None and inference_done_event.is_set():
+                        clear_upto = end_frame_processed
+                    orig_size_before = len(original_buffer)
                     clear_infos: List[Tuple[int, Dict]] = []
-                    for bn in sorted(staging_buffer_1.get_batch_info().keys()):
-                        rng = staging_buffer_1.peek_batch_source_index_range(bn)
+                    for bn in sorted(original_buffer.get_batch_info().keys()):
+                        rng = original_buffer.peek_batch_source_index_range(bn)
                         if rng is None:
                             continue
-                        _min_src, _max_src = rng
-                        if _max_src <= end_frame_processed:
-                            clear_infos.append((bn, staging_buffer_1.clear_batch(bn)))
-                    orig_size_after = len(staging_buffer_1)
+                        _, _max_src = rng
+                        if _max_src <= clear_upto:
+                            clear_infos.append((bn, original_buffer.clear_batch(bn)))
+                    orig_size_after = len(original_buffer)
                     if clear_infos:
                         parts = []
                         total_frames = 0
@@ -792,7 +774,8 @@ def correlation_worker(
                             )
                         print(
                             f"[CorrelationWorker] Batch {correlation_batch}: original_buffer cleared "
-                            f"{len(clear_infos)} reader batch(es) (segment end_frame={end_frame_processed}); "
+                            f"{len(clear_infos)} reader batch(es) (clear_upto={clear_upto}, "
+                            f"segment_end={end_frame_processed}); "
                             f"total_frames={total_frames}; " + "; ".join(parts) + f"; "
                             f"total_size {orig_size_before}->{orig_size_after}",
                             flush=True,
@@ -804,36 +787,18 @@ def correlation_worker(
                                 write_immediately=True,
                                 batch=correlation_batch,
                                 metadata=(
-                                    f"segment_end_frame={end_frame_processed},reader_batches_cleared="
-                                    f"{[b for b, _ in clear_infos]},total_frames={total_frames},"
+                                    f"clear_upto={clear_upto},segment_end_frame={end_frame_processed},"
+                                    f"reader_batches_cleared={[b for b, _ in clear_infos]},total_frames={total_frames},"
                                     f"details={'; '.join(parts)},before={orig_size_before},after={orig_size_after}"
                                 ),
                             )
                     else:
                         print(
                             f"[CorrelationWorker] Batch {correlation_batch}: original_buffer — no reader batch "
-                            f"fully cleared (max Source_Index per batch still > segment end_frame={end_frame_processed}, "
+                            f"fully cleared (max Source_Index per batch still > clear_upto={clear_upto}, "
                             f"or buffer empty); size={orig_size_after}",
                             flush=True,
                         )
-                else:
-                    removed1, removed2 = cleanup_staging_buffers_from_triangulation(
-                        max_common_frame=max_common_frame,
-                        output_dir=correlation_output_dir,
-                        camera_1_id=camera_1_id,
-                        camera_2_id=camera_2_id,
-                        staging_buffer_1=staging_buffer_1,
-                        staging_buffer_2=staging_buffer_2,
-                        camera_1_csv_path=camera_1_csv_path,
-                        camera_2_csv_path=camera_2_csv_path,
-                    )
-                    if enable_visualization:
-                        print(
-                            f"[CorrelationWorker]    🧹 Cleaned staging buffers after visualization "
-                            f"(cam1 removed={removed1}, cam2 removed={removed2})"
-                        )
-                    else:
-                        pass
 
             complete_segment_duration = time.time() - complete_segment_start_time
             t_accounted = (

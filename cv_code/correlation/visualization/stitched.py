@@ -188,8 +188,7 @@ def append_stitched_segment_to_video(
     output_dir: str,
     camera_1_id: str,
     camera_2_id: str,
-    staging_buffer_1,
-    staging_buffer_2,
+    original_buffer,
     fnwd_to_original_cam1: Dict[int, int],
     fnwd_to_original_cam2: Dict[int, int],
     correlated_pairs_per_frame: Dict[int, List[Tuple[Tuple[float, float], Tuple[float, float]]]],
@@ -202,19 +201,20 @@ def append_stitched_segment_to_video(
     closed in this call (no single rolling output file). Use ``filename_suffix="_nodetections"``
     when there are no correlated 2D pairs for the segment.
 
+    ``original_buffer`` must be a shared ``OriginalFrameBuffer`` holding both cameras (triplet pipeline).
+
     Returns: total number of frames written across all segment files this call.
     """
-    if staging_buffer_1 is None or staging_buffer_2 is None:
+    if original_buffer is None:
         return 0
 
-    try:
-        from ...triplet_csv_reader import OriginalFrameBuffer as _OFB
-        _use_ofb_stitched = (
-            isinstance(staging_buffer_1, _OFB)
-            and staging_buffer_1 is staging_buffer_2
+    from ...triplet_csv_reader import OriginalFrameBuffer as _OFB
+    if not isinstance(original_buffer, _OFB):
+        print(
+            "[CorrelationWorker]    ⚠️  append_stitched_segment_to_video: requires OriginalFrameBuffer",
+            flush=True,
         )
-    except ImportError:
-        _use_ofb_stitched = False
+        return 0
 
     video_subdir = os.path.join(output_dir, "stitched_correlation_videos")
     os.makedirs(video_subdir, exist_ok=True)
@@ -233,31 +233,9 @@ def append_stitched_segment_to_video(
         frame_indices_cam1 = set(fnwd_to_original_cam1[fnwd] for fnwd in frame_numbers)
         frame_indices_cam2 = set(fnwd_to_original_cam2[fnwd] for fnwd in frame_numbers)
 
-        if _use_ofb_stitched:
-            frame_dict_cam1, frame_dict_cam2 = staging_buffer_1.get_stitched_frame_dicts(
-                frame_indices_cam1, frame_indices_cam2
-            )
-        else:
-            try:
-                frames_from_buffer_cam1 = staging_buffer_1.peek_frames_by_indices(
-                    frame_indices_cam1
-                )
-                frames_from_buffer_cam2 = staging_buffer_2.peek_frames_by_indices(
-                    frame_indices_cam2
-                )
-            except Exception as e:
-                print(f"[CorrelationWorker]    ❌ Error peeking frames from staging buffers: {e}")
-                import traceback
-                traceback.print_exc()
-                continue
-            frame_dict_cam1 = {
-                frame_data.camera_stream_index: frame_data.frame
-                for frame_data in frames_from_buffer_cam1
-            }
-            frame_dict_cam2 = {
-                frame_data.camera_stream_index: frame_data.frame
-                for frame_data in frames_from_buffer_cam2
-            }
+        frame_dict_cam1, frame_dict_cam2 = original_buffer.get_stitched_frame_dicts(
+            frame_indices_cam1, frame_indices_cam2
+        )
         if not frame_dict_cam1 or not frame_dict_cam2:
             continue
 

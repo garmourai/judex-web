@@ -89,7 +89,7 @@ def get_best_point_each_frame(
     trajectories: List[Trajectory],
     segment: Tuple[int, int],
 ) -> Tuple[List[Trajectory], List[Trajectory], List[Dict[str, Any]], List[Dict[str, Any]]]:
-    _, end_frame = segment
+    start_frame, end_frame = segment
     per_frame_stats: List[Dict[str, Any]] = []
     per_frame_decisions: List[Dict[str, Any]] = []
     frame_to_trajectories: Dict[int, List[Tuple[int, Detection]]] = {}
@@ -97,7 +97,9 @@ def get_best_point_each_frame(
         for frame_num, detection in trajectory.detections.items():
             frame_to_trajectories.setdefault(frame_num, []).append((traj_idx, detection))
 
-    frames_to_process = sorted([f for f in frame_to_trajectories.keys() if f <= end_frame - LAST_FRAMES_TO_SKIP])
+    low = max(0, start_frame - LAST_FRAMES_TO_SKIP)
+    high = end_frame - LAST_FRAMES_TO_SKIP
+    frames_to_process = sorted(f for f in frame_to_trajectories.keys() if low <= f <= high)
     trajectories_to_remove = set()
 
     for frame_num in frames_to_process:

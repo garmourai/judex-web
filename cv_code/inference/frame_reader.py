@@ -185,18 +185,25 @@ class TracknetBuffer:
         """Check if buffer is paused (full)."""
         return self._is_paused
     
-    def remove_frames(self, num_frames: int, staging_buffer_1=None, staging_buffer_2=None, camera_1_id: Optional[str] = None, camera_2_id: Optional[str] = None, clear_staging_buffers: bool = False) -> int:
+    def remove_frames(
+        self,
+        num_frames: int,
+        original_buffer=None,
+        camera_1_id: Optional[str] = None,
+        camera_2_id: Optional[str] = None,
+        clear_staging_buffers: bool = False,
+    ) -> int:
         """
         Remove frames from the front of the buffer (thread-safe).
-        Optionally removes corresponding frames from staging buffers if provided and clear_staging_buffers=True.
+        Optionally removes corresponding frames from ``original_buffer`` if provided and
+        clear_staging_buffers=True (legacy StagingBuffer with remove_frames; shared buffer uses one call).
         
         Args:
             num_frames: Number of frames to remove
-            staging_buffer_1: Optional StagingBuffer for camera 1
-            staging_buffer_2: Optional StagingBuffer for camera 2
-            camera_1_id: Camera ID for staging_buffer_1
-            camera_2_id: Camera ID for staging_buffer_2
-            clear_staging_buffers: If True, also remove frames from staging buffers (default: False)
+            original_buffer: Optional shared buffer (e.g. OriginalFrameBuffer in triplet pipeline)
+            camera_1_id: Camera ID for counting cam1 frames in this removal window
+            camera_2_id: Camera ID for counting cam2 frames in this removal window
+            clear_staging_buffers: If True, also remove frames from original_buffer when it supports remove_frames
             
         Returns:
             Number of frames actually removed
@@ -242,11 +249,10 @@ class TracknetBuffer:
             elif removed == 0:
                 print(f"[remove_frames] TracknetBuffer removed 0 (requested {num_frames}, size was {initial_size})")
 
-            if clear_staging_buffers:
-                if staging_buffer_1 and camera_1_count > 0:
-                    staging_buffer_1.remove_frames(camera_1_count)
-                if staging_buffer_2 and camera_2_count > 0:
-                    staging_buffer_2.remove_frames(camera_2_count)
+            if clear_staging_buffers and original_buffer is not None:
+                total_staging = camera_1_count + camera_2_count
+                if total_staging > 0 and hasattr(original_buffer, "remove_frames"):
+                    original_buffer.remove_frames(total_staging)
 
             if len(self.frames) < self.max_size:
                 self._is_paused = False

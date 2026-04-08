@@ -1,4 +1,4 @@
-"""Cam1 overlay MP4s from triangulated 3D points (reprojection onto staging-buffer frames)."""
+"""Cam1 overlay MP4s from triangulated 3D points (reprojection onto OriginalFrameBuffer frames)."""
 
 import json
 import os
@@ -7,9 +7,11 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import cv2
+import numpy as np
 
 from ...inference.inference import get_trajectory_color
-from ..correlation_worker_utils import load_fid_to_stream_from_dist_tracker_csv
+from ...triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
+from ..trajectory.select_best import LAST_FRAMES_TO_SKIP
 from .utils import reproject_point
 
 # Overlay text: white on dark panels. HUD + trajectory labels +50% vs prior; cost panel matches HUD.
@@ -20,7 +22,6 @@ _VIZ_SCALE_HUD = 0.5625
 _VIZ_SCALE_LABEL = 0.5625
 _VIZ_SCALE_COST_TITLE = 0.61875
 _VIZ_SCALE_COST_LINE = 0.50625
-_VIZ_LINE_HEIGHT = 23
 
 
 def _load_trajectory_selection_jsonl(
@@ -89,14 +90,85 @@ def _build_frame_data_and_costs_from_selection(
     return all_frame_data, frame_costs_map
 
 
+def _left_hud_dimensions() -> Tuple[int, int, int]:
+    """Width, total height (px), and vertical step between HUD text baselines."""
+    hud_w = 400
+    sample = "FPS: 30  |  frame_id: 999999  |  camera_stream_index: 999999"
+    (_, th), bl = cv2.getTextSize(sample, _VIZ_FONT, _VIZ_SCALE_HUD, _VIZ_THICKNESS)
+    line_step = th + bl + 6
+    overlay_height = 10 + 4 * line_step + 10
+    return hud_w, overlay_height, line_step
+
+
+def _draw_propagated_cost_panel(
+    frame_img: np.ndarray,
+    frame_idx: int,
+    frame_costs_map: Dict[int, Dict[str, List[float]]],
+    left_hud_right_x: int,
+    left_hud_bottom_y: int,
+    gap: int = 8,
+) -> None:
+    """Top-right cost summary; box size from measured text; avoids overlap with left HUD."""
+    default_lists = {"f1": [], "f2": [], "epi": [], "reproj": [], "temp": []}
+    cost_info = frame_costs_map.get(frame_idx, default_lists)
+    cost_lines: List[str] = []
+    for key, label in (("f1", "F1"), ("f2", "F2"), ("epi", "Epi"), ("reproj", "Rho"), ("temp", "Temp")):
+        vals = cost_info.get(key, []) or []
+        if vals:
+            shown = ", ".join(f"{float(v):.2f}" for v in vals[:3])
+            suffix = "..." if len(vals) > 3 else ""
+            cost_lines.append(f"{label}: [{shown}{suffix}]")
+        else:
+            cost_lines.append(f"{label}: []")
+
+    lines_to_draw: List[Tuple[str, float]] = [("Propagated Costs", _VIZ_SCALE_COST_TITLE)]
+    lines_to_draw.extend((ln, _VIZ_SCALE_COST_LINE) for ln in cost_lines)
+
+    margin = 6
+    line_gap = 4
+    lines_meta: List[Tuple[str, float, int, int, int]] = []
+    for text, scale in lines_to_draw:
+        (tw, th), bl = cv2.getTextSize(text, _VIZ_FONT, scale, _VIZ_THICKNESS)
+        lines_meta.append((text, scale, tw, th, bl))
+
+    box_w = margin * 2 + max(m[2] for m in lines_meta)
+    inner_h = sum(m[3] + m[4] + line_gap for m in lines_meta) - line_gap
+    box_h = margin * 2 + inner_h
+
+    right_pad = 15
+    x2 = frame_img.shape[1] - right_pad
+    x1 = max(0, x2 - box_w)
+    y1 = 10
+    if x1 < left_hud_right_x + gap:
+        y1 = left_hud_bottom_y + gap
+    y2 = y1 + box_h
+
+    overlay_r = frame_img.copy()
+    cv2.rectangle(overlay_r, (x1, y1), (x2, y2), (0, 0, 0), -1)
+    cv2.addWeighted(overlay_r, 0.55, frame_img, 0.45, 0, frame_img)
+
+    y_cursor = y1 + margin
+    for text, scale, _tw, th, bl in lines_meta:
+        y_cursor += th + bl
+        cv2.putText(
+            frame_img,
+            text,
+            (x1 + margin, y_cursor),
+            _VIZ_FONT,
+            scale,
+            _VIZ_TEXT_COLOR,
+            _VIZ_THICKNESS,
+        )
+        y_cursor += line_gap
+
+
 def create_visualization_from_triangulation(
     frame_segments: List[Tuple[int, int]],
     output_dir: str,
-    staging_buffer_1,
+    original_buffer,
     camera_1_cam_path: str,
     camera_1_id: str,
     video_chunk_size: int = 1000,
-    staging_buffer_2=None,
     profiler=None,
     trajectory_data: Optional[Dict] = None,
     removed_trajectory_data: Optional[Dict] = None,
@@ -111,21 +183,30 @@ def create_visualization_from_triangulation(
     Args:
         frame_segments: List of (start_frame, end_frame) tuples that were triangulated
         output_dir: Output directory for videos; also used to locate trajectory_selection.jsonl if tracker_base_dir is not set
-        staging_buffer_1: StagingBuffer for camera 1 to get frames (or VideoFrameProvider for offline flow)
+        original_buffer: OriginalFrameBuffer for camera 1 frames (source_index == global frame id)
         camera_1_cam_path: Path to camera 1 calibration pickle file
         camera_1_id: Camera 1 identifier
         video_chunk_size: Number of frames per video chunk (default: 1000)
-        staging_buffer_2: Optional StagingBuffer for camera 2 (to clear frames)
         profiler: Optional TimeProfiler instance for recording timing metrics
         trajectory_data: Dict mapping segment tuple to list of trajectories (kept trajectories)
         removed_trajectory_data: Dict mapping segment tuple to list of removed trajectories (drawn as big black circles)
         trail_length: Number of past frames to show in trajectory trail (default: 10)
         show_trajectory_labels: Whether to show trajectory ID text labels (default: True)
         tracker_base_dir: If set, read trajectory_selection.jsonl from this directory (e.g. correlation output read path)
-        camera_1_csv_path: Path to camera 1 dist_tracker.csv (StagingBuffer frame→stream index mapping; not used with OriginalFrameBuffer)
+        camera_1_csv_path: Unused (kept for call-site compatibility; OFB uses identity frame mapping)
     """
     visualization_start_time = time.time()
-    # Load camera calibration
+    if not frame_segments:
+        print("[CorrelationWorker]    ❌ create_visualization_from_triangulation: frame_segments is empty")
+        return
+    if not isinstance(original_buffer, _OriginalFrameBuffer):
+        print("[CorrelationWorker]    ❌ Camera 1 visualization requires OriginalFrameBuffer")
+        return
+
+    jsonl_ranges = [(max(0, s - LAST_FRAMES_TO_SKIP), e) for s, e in frame_segments]
+    f_min = min(s for s, _ in jsonl_ranges)
+    f_max = max(e for _, e in frame_segments)
+
     with open(camera_1_cam_path, "rb") as f:
         camera_1 = pickle.load(f)
     print(f"[CorrelationWorker]    📷 Loaded camera 1 calibration from {camera_1_cam_path}")
@@ -134,125 +215,55 @@ def create_visualization_from_triangulation(
     trajectory_history: Dict[int, List] = {}
     frame_removed_trajectory_map: Dict[int, List] = {}
     _data_dir = tracker_base_dir if tracker_base_dir is not None else output_dir
-    frame_ranges = frame_segments or []
-
     jsonl_path = os.path.join(_data_dir, "trajectory_selection.jsonl")
-    selection_by_frame = _load_trajectory_selection_jsonl(jsonl_path, frame_ranges)
+    selection_by_frame = _load_trajectory_selection_jsonl(jsonl_path, jsonl_ranges)
     if not selection_by_frame:
         print(
-            f"[CorrelationWorker]    ❌ trajectory_selection.jsonl missing or empty (required for visualization): "
-            f"{jsonl_path}"
+            f"[CorrelationWorker]    ⚠️  trajectory_selection.jsonl missing or empty for range "
+            f"[{f_min}, {f_max}]: {jsonl_path} — writing HUD-only / placeholder frames"
         )
-        return
 
     frame_trajectory_map, trajectory_history, frame_removed_trajectory_map = _build_traj_maps_from_selection(
         selection_by_frame
     )
     all_frame_data, frame_costs_map = _build_frame_data_and_costs_from_selection(selection_by_frame)
-    print(
-        f"[CorrelationWorker]    ✅ Loaded trajectory_selection.jsonl: {jsonl_path} "
-        f"({len(selection_by_frame)} frame records, {len(trajectory_history)} trajectories)"
-    )
+    if selection_by_frame:
+        print(
+            f"[CorrelationWorker]    ✅ Loaded trajectory_selection.jsonl: {jsonl_path} "
+            f"({len(selection_by_frame)} frame records, {len(trajectory_history)} trajectories)"
+        )
 
     for traj_id in trajectory_history:
         trajectory_history[traj_id].sort(key=lambda x: x[0])
 
-    # frame_id -> per-camera stream index (StagingBuffer / overlay labels)
-    from ...triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
-
-    _use_original_buffer = isinstance(staging_buffer_1, _OriginalFrameBuffer)
-
-    if _use_original_buffer:
-        frame_id_to_cam_stream = {fn: fn for fn in all_frame_data.keys()}
-        print(
-            "[CorrelationWorker]    🗺️  OriginalFrameBuffer: using frame_id as camera_stream_index "
-            "(no dist_tracker mapping needed)"
-        )
-    else:
-        if not camera_1_csv_path:
-            print(
-                "[CorrelationWorker]    ❌ camera_1_csv_path (dist_tracker.csv) required for "
-                "non–OriginalFrameBuffer visualization"
-            )
-            return
-        frame_id_to_cam_stream = load_fid_to_stream_from_dist_tracker_csv(camera_1_csv_path)
-        if len(frame_id_to_cam_stream) == 0:
-            print(
-                f"[CorrelationWorker]    ❌ No frame rows in dist_tracker for visualization: {camera_1_csv_path}"
-            )
-            return
-        print(
-            f"[CorrelationWorker]    🗺️  Loaded {len(frame_id_to_cam_stream)} frame_id→camera_stream_index "
-            f"from dist_tracker"
-        )
-
-    # Filter to only frames that have a valid mapping entry
-    original_frame_count = len(all_frame_data)
-    all_frame_data = {
-        fnwd: value for fnwd, value in all_frame_data.items() if fnwd in frame_id_to_cam_stream
-    }
-    frame_costs_map = {k: frame_costs_map[k] for k in all_frame_data.keys() if k in frame_costs_map}
-    if original_frame_count != len(all_frame_data):
-        print(
-            f"[CorrelationWorker]    ℹ️  Filtered frames without mapping: "
-            f"{original_frame_count} → {len(all_frame_data)} usable frames for visualization"
-        )
-
-    # Count total raw points
-    total_raw_points = sum(len(coords_list) for _, coords_list in all_frame_data.values())
+    dense_indices = set(range(f_min, f_max + 1))
+    frame_dict_cam1 = original_buffer.get_frames_for_sync_frames(dense_indices)
     print(
-        f"[CorrelationWorker]    📊 Loaded {total_raw_points} raw 3D point positions from trajectory_selection.jsonl"
+        f"[CorrelationWorker]    🗺️  OriginalFrameBuffer dense viz: frame_id ∈ [{f_min}, {f_max}], "
+        f"retrieved {len(frame_dict_cam1)}/{len(dense_indices)} cam1 frames from buffer"
     )
 
-    if len(all_frame_data) == 0:
-        print(
-            f"[CorrelationWorker]    ⚠️  No frame data after applying frame_id→camera_stream mapping "
-            f"(check trajectory_selection.jsonl vs dist_tracker)"
-        )
-        return
-
-    global_frame_indices = set(all_frame_data.keys())
-
-    # --- judex pipeline: OriginalFrameBuffer direct lookup (no mapping file needed) ---
-    if _use_original_buffer:
-        # source_index == global frame_id — direct dict lookup, no mapping file
-        frame_dict_cam1 = staging_buffer_1.get_frames_for_sync_frames(global_frame_indices)
-        print(f"[CorrelationWorker]    📦 OriginalFrameBuffer: retrieved {len(frame_dict_cam1)} cam1 frames directly")
-        for fnwd in global_frame_indices:
-            if fnwd not in all_frame_data:
-                continue
-            frame = frame_dict_cam1.get(fnwd)
-            if frame is not None:
-                _, coords_list = all_frame_data[fnwd]
-                all_frame_data[fnwd] = (frame, coords_list)
+    fw, fh = original_buffer.get_original_frame_size()
+    if fw is not None and fh is not None and int(fw) > 0 and int(fh) > 0:
+        black_placeholder = np.zeros((int(fh), int(fw), 3), dtype=np.uint8)
     else:
-        # --- Original StagingBuffer path (mapping file required) ---
-        frame_indices_cam1: set[int] = set()
-        for fnwd in global_frame_indices:
-            frame_indices_cam1.add(frame_id_to_cam_stream[fnwd])
+        sample = next(iter(frame_dict_cam1.values()), None)
+        if sample is not None:
+            black_placeholder = np.zeros_like(sample)
+        else:
+            black_placeholder = np.zeros((1080, 1920, 3), dtype=np.uint8)
 
-        print(
-            f"[CorrelationWorker]    📦 Peeking at {len(frame_indices_cam1)} frames from staging buffer for visualization..."
-        )
-        frames_from_buffer = staging_buffer_1.peek_frames_by_indices(frame_indices_cam1)
-        print(f"[CorrelationWorker]    ✅ Retrieved {len(frames_from_buffer)} frames from camera 1 staging buffer")
+    total_raw_points = sum(len(coords_list) for _, coords_list in all_frame_data.values())
+    print(
+        f"[CorrelationWorker]    📊 JSONL keys with point payloads: {len(all_frame_data)}, "
+        f"raw 3D positions: {total_raw_points}"
+    )
 
-        frame_dict_cam1 = {
-            frame_data.camera_stream_index: frame_data.frame for frame_data in frames_from_buffer
-        }
+    hud_w, overlay_height, hud_line_step = _left_hud_dimensions()
+    left_hud_right_x = 10 + hud_w
+    left_hud_bottom_y = 10 + overlay_height
 
-        for fnwd in global_frame_indices:
-            if fnwd not in all_frame_data:
-                continue
-            cam_stream_idx = frame_id_to_cam_stream.get(fnwd)
-            if cam_stream_idx is None:
-                continue
-            if cam_stream_idx in frame_dict_cam1:
-                _, coords_list = all_frame_data[fnwd]
-                all_frame_data[fnwd] = (frame_dict_cam1[cam_stream_idx], coords_list)
-
-    # Reproject 3D coordinates to camera 1 frames
-    print(f"[CorrelationWorker]    🔄 Reprojecting 3D coordinates to camera 1 frames...")
+    print("[CorrelationWorker]    🔄 Reprojecting 3D coordinates to camera 1 frames (dense range)...")
 
     # Helper function to get trail points for a trajectory up to current frame
     def get_trail_points(traj_id: int, current_frame: int, n: int) -> List[Tuple[float, float, float]]:
@@ -273,14 +284,12 @@ def create_visualization_from_triangulation(
 
     # Color for removed/filtered points (black with red outline)
     REMOVED_POINT_COLOR = (0, 0, 0)  # Black
-    REMOVED_POINT_OUTLINE_COLOR = (0, 0, 255)  # Red (BGR format)
 
     # Video FPS
     VIDEO_FPS = 30.0
 
     # Prepare frames with reprojected points
-    frames_with_points = []
-    sorted_frame_indices = sorted(all_frame_data.keys())
+    frames_with_points: List[Tuple[int, np.ndarray]] = []
 
     use_trajectory_viz = len(frame_trajectory_map) > 0
 
@@ -288,76 +297,57 @@ def create_visualization_from_triangulation(
     trajectory_points_count = 0
     total_raw_points_drawn = 0
 
-    for frame_idx in sorted_frame_indices:
-        frame_img, coords_list = all_frame_data[frame_idx]
-        cam_stream_idx = frame_id_to_cam_stream.get(frame_idx)
-        if cam_stream_idx is None:
-            continue
+    for frame_idx in range(f_min, f_max + 1):
+        cam_stream_idx = frame_idx
+        entry = all_frame_data.get(frame_idx)
+        if entry is not None:
+            _, coords_list = entry
+        else:
+            coords_list = []
 
-        if frame_img is None:
-            continue
+        pref = frame_dict_cam1.get(frame_idx)
+        if pref is not None:
+            frame_img = pref.copy()
+        else:
+            frame_img = black_placeholder.copy()
 
-        # Make a copy to avoid modifying original
-        frame_img = frame_img.copy()
-
-        # Count raw points in this frame
         frame_raw_points = len(coords_list) if coords_list else 0
         frame_traj_points = 0
         frame_removed_points = 0
 
-        # ===== Step 0: Draw REMOVED TRAJECTORY points first (so they appear behind trajectory points) =====
-        # Draw removed trajectories from get_best_point_each_frame as big black circles
         if frame_idx in frame_removed_trajectory_map:
             for coords in frame_removed_trajectory_map[frame_idx]:
                 pt_2d = reproject_point(camera_1, coords)
                 pt_int = (int(pt_2d[0]), int(pt_2d[1]))
-
-                # Draw big black circle for removed trajectory points
-                cv2.circle(frame_img, pt_int, 15, REMOVED_POINT_COLOR, -1)  # Big black filled circle
-
+                cv2.circle(frame_img, pt_int, 15, REMOVED_POINT_COLOR, -1)
                 removed_points_count += 1
                 frame_removed_points += 1
 
         total_raw_points_drawn += frame_raw_points
 
         if use_trajectory_viz and frame_idx in frame_trajectory_map:
-            # ===== TRAJECTORY-AWARE VISUALIZATION =====
             traj_points_in_frame = frame_trajectory_map[frame_idx]
-
-            # Collect all trajectory IDs active in this frame
             active_traj_ids = set(traj_id for traj_id, _ in traj_points_in_frame)
 
-            # Step 1: Draw trajectory trails (lines connecting past points)
             for traj_id in active_traj_ids:
                 trail_coords = get_trail_points(traj_id, frame_idx, trail_length)
                 if len(trail_coords) >= 2:
                     color = get_trajectory_color(traj_id)
-
-                    # Reproject all trail points
                     trail_2d = []
                     for coords in trail_coords:
                         pt_2d = reproject_point(camera_1, coords)
                         trail_2d.append((int(pt_2d[0]), int(pt_2d[1])))
-
-                    # Draw lines connecting trail points with fading opacity
                     for i in range(len(trail_2d) - 1):
-                        # Fade factor: older points are more transparent
                         fade = (i + 1) / len(trail_2d)
-                        # Use thinner lines for older parts of trail
                         thickness = max(1, int(3 * fade))
                         cv2.line(frame_img, trail_2d[i], trail_2d[i + 1], color, thickness)
 
-            # Step 2: Draw current detection points on top
             for traj_id, coords in traj_points_in_frame:
                 pt_2d = reproject_point(camera_1, coords)
                 pt_int = (int(pt_2d[0]), int(pt_2d[1]))
                 color = get_trajectory_color(traj_id)
-
-                # Draw filled circle with black outline
-                cv2.circle(frame_img, pt_int, 8, color, -1)  # Filled circle
-                cv2.circle(frame_img, pt_int, 10, (0, 0, 0), 2)  # Black outline
-
-                # Step 3: Draw trajectory ID label (if enabled)
+                cv2.circle(frame_img, pt_int, 8, color, -1)
+                cv2.circle(frame_img, pt_int, 10, (0, 0, 0), 2)
                 if show_trajectory_labels:
                     label = f"T{traj_id}"
                     label_pos = (pt_int[0] + 18, pt_int[1] - 8)
@@ -380,130 +370,57 @@ def create_visualization_from_triangulation(
                         _VIZ_TEXT_COLOR,
                         _VIZ_THICKNESS,
                     )
-
                 trajectory_points_count += 1
                 frame_traj_points += 1
 
         elif coords_list:
-            # ===== FALLBACK: Simple green point visualization (no trajectory data) =====
             for coords in coords_list:
                 pt_2d = reproject_point(camera_1, coords)
                 pt_int = (int(pt_2d[0]), int(pt_2d[1]))
-                cv2.circle(frame_img, pt_int, 5, (0, 255, 0), -1)  # Green filled circle
-                cv2.circle(frame_img, pt_int, 8, (0, 255, 0), 2)  # Green outline
+                cv2.circle(frame_img, pt_int, 5, (0, 255, 0), -1)
+                cv2.circle(frame_img, pt_int, 8, (0, 255, 0), 2)
 
-        # ===== Draw FPS and frame info overlay =====
-        # Dark semi-transparent patch so white HUD text stays readable
-        overlay_height = 78
         overlay = frame_img.copy()
-        hud_w = 400
         cv2.rectangle(overlay, (10, 10), (10 + hud_w, 10 + overlay_height), (0, 0, 0), -1)
         cv2.addWeighted(overlay, 0.55, frame_img, 0.45, 0, frame_img)
 
-        y_offset = 28
-        line_height = _VIZ_LINE_HEIGHT
-
-        # Line 1: FPS and Frame number
-        cv2.putText(
-            frame_img,
+        y_text = 10 + hud_line_step
+        hud_lines = [
             f"FPS: {VIDEO_FPS:.0f}  |  frame_id: {frame_idx}  |  camera_stream_index: {cam_stream_idx}",
-            (20, y_offset),
-            _VIZ_FONT,
-            _VIZ_SCALE_HUD,
-            _VIZ_TEXT_COLOR,
-            _VIZ_THICKNESS,
-        )
-        y_offset += line_height
-
-        # Line 2: Raw points in this frame
-        cv2.putText(
-            frame_img,
             f"Raw 3D Points: {frame_raw_points}",
-            (20, y_offset),
-            _VIZ_FONT,
-            _VIZ_SCALE_HUD,
-            _VIZ_TEXT_COLOR,
-            _VIZ_THICKNESS,
-        )
-        y_offset += line_height
-
-        # Line 3: Trajectory points
-        cv2.putText(
-            frame_img,
             f"Trajectory Points: {frame_traj_points}",
-            (20, y_offset),
-            _VIZ_FONT,
-            _VIZ_SCALE_HUD,
-            _VIZ_TEXT_COLOR,
-            _VIZ_THICKNESS,
-        )
-        y_offset += line_height
-
-        # Line 4: Removed points
-        cv2.putText(
-            frame_img,
             f"Removed Points: {frame_removed_points}",
-            (20, y_offset),
-            _VIZ_FONT,
-            _VIZ_SCALE_HUD,
-            _VIZ_TEXT_COLOR,
-            _VIZ_THICKNESS,
-        )
-
-        # ===== Draw propagated cost summary (top-right) =====
-        cost_info = frame_costs_map.get(frame_idx, {"f1": [], "f2": [], "epi": [], "reproj": [], "temp": []})
-        cost_lines = []
-        for key, label in (("f1", "F1"), ("f2", "F2"), ("epi", "Epi"), ("reproj", "Rho"), ("temp", "Temp")):
-            vals = cost_info.get(key, []) or []
-            if vals:
-                shown = ", ".join(f"{float(v):.2f}" for v in vals[:3])
-                suffix = "..." if len(vals) > 3 else ""
-                cost_lines.append(f"{label}: [{shown}{suffix}]")
-            else:
-                cost_lines.append(f"{label}: []")
-        right_pad = 15
-        box_w = 400
-        cost_line_spacing = 8
-        box_h = 8 + 5 * cost_line_spacing
-        x2 = frame_img.shape[1] - right_pad
-        x1 = max(0, x2 - box_w)
-        y1 = 10
-        y2 = y1 + box_h
-        overlay_r = frame_img.copy()
-        cv2.rectangle(overlay_r, (x1, y1), (x2, y2), (0, 0, 0), -1)
-        cv2.addWeighted(overlay_r, 0.55, frame_img, 0.45, 0, frame_img)
-        cv2.putText(
-            frame_img,
-            "Propagated Costs",
-            (x1 + 3, y1 + 6),
-            _VIZ_FONT,
-            _VIZ_SCALE_COST_TITLE,
-            _VIZ_TEXT_COLOR,
-            _VIZ_THICKNESS,
-        )
-        for i, line in enumerate(cost_lines):
+        ]
+        for line in hud_lines:
             cv2.putText(
                 frame_img,
                 line,
-                (x1 + 3, y1 + 6 + cost_line_spacing * (i + 1)),
+                (20, y_text),
                 _VIZ_FONT,
-                _VIZ_SCALE_COST_LINE,
+                _VIZ_SCALE_HUD,
                 _VIZ_TEXT_COLOR,
                 _VIZ_THICKNESS,
             )
+            y_text += hud_line_step
+
+        _draw_propagated_cost_panel(
+            frame_img,
+            frame_idx,
+            frame_costs_map,
+            left_hud_right_x,
+            left_hud_bottom_y,
+        )
 
         frames_with_points.append((frame_idx, frame_img))
+
 
     print(
         f"[CorrelationWorker]    📊 Visualization stats: {total_raw_points_drawn} total raw 3D points drawn ({trajectory_points_count} in trajectories, {removed_points_count} removed/filtered)"
     )
 
-    if len(frames_with_points) == 0:
-        print(f"[CorrelationWorker]    ⚠️  No frames available for visualization")
+    if not frames_with_points:
+        print("[CorrelationWorker]    ⚠️  No frames in visualization range (empty segment)")
         return
-
-    # Sort frames for video writing
-    frames_with_points.sort(key=lambda x: x[0])
 
     # Create output video directory
     video_output_dir = os.path.join(output_dir, camera_1_id, "visualization_videos")

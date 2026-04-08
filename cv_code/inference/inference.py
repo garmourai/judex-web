@@ -594,8 +594,7 @@ class RealtimeInference:
         buffer: TracknetBuffer,
         camera_id: str,
         num_frames: int = 96,
-        staging_buffer_1=None,
-        staging_buffer_2=None
+        original_buffer=None,
     ) -> bool:
         """
         Process 96 frames from a single camera.
@@ -604,8 +603,7 @@ class RealtimeInference:
             buffer: TracknetBuffer containing frames
             camera_id: Camera ID to process frames from
             num_frames: Number of frames to process (default: 96)
-            staging_buffer_1: Optional StagingBuffer for camera 1
-            staging_buffer_2: Optional StagingBuffer for camera 2
+            original_buffer: Optional shared OriginalFrameBuffer (triplet pipeline); forwarded to remove_frames
             
         Returns:
             True if processing successful
@@ -711,8 +709,7 @@ class RealtimeInference:
             try:
                 removed = buffer.remove_frames(
                     num_frames,
-                    staging_buffer_1=staging_buffer_1,
-                    staging_buffer_2=staging_buffer_2,
+                    original_buffer=original_buffer,
                     camera_1_id=self.camera_1_id,
                     camera_2_id=self.camera_2_id,
                     clear_staging_buffers=False,

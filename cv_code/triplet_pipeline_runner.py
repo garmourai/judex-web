@@ -236,8 +236,7 @@ class TripletPipeline:
                 self._inference,
                 self._stop_event,
                 self._profiler,  # profiler
-                self._original_buffer,   # staging_buffer_1 (passed through to process_camera_batch)
-                None,                    # staging_buffer_2
+                self._original_buffer,   # OriginalFrameBuffer (shared cam1+cam2; passed to process_camera_batch)
                 self._inference_done_event,
                 self._triplet_csv_reader_done_event,
                 self._force_stop_event,
@@ -264,14 +263,12 @@ class TripletPipeline:
                     self._stop_event,
                     self._profiler,   # profiler
                     0.05,   # check_interval
-                    self._original_buffer,   # staging_buffer_1 → OriginalFrameBuffer
-                    self._original_buffer,   # staging_buffer_2 → same buffer (both cams stored here)
+                    self._original_buffer,   # shared OriginalFrameBuffer (both cams)
                     self._enable_visualization,
                     self._enable_stitched_visualization,
                     self._inference_done_event,
                 ),
                 kwargs={
-                    "chunk_size": self._chunk_size,
                     "original_frame_width": self.config.camera_1_original_frame_width,
                     "original_frame_height": self.config.camera_1_original_frame_height,
                     "force_stop_event": self._force_stop_event,

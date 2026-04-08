@@ -14,8 +14,7 @@ def inference_worker(
     inference: RealtimeInference,
     stop_event: threading.Event,
     profiler=None,
-    staging_buffer_1=None,
-    staging_buffer_2=None,
+    original_buffer=None,
     inference_done_event: Optional[threading.Event] = None,
     triplet_csv_reader_done_event: Optional[threading.Event] = None,
     force_stop_event: Optional[threading.Event] = None,
@@ -143,7 +142,7 @@ def inference_worker(
             )
             cur_size = len(current_buffer)
             other_size = len(other_buffer)
-            orig_size = len(staging_buffer_1) if staging_buffer_1 is not None else -1
+            orig_size = len(original_buffer) if original_buffer is not None else -1
             print(
                 f"[InferenceWorker] 📥 Buffer status before {expected_camera} batch: "
                 f"{cur_size}/{current_buffer.max_size} (current tb), "
@@ -179,8 +178,7 @@ def inference_worker(
                 current_buffer,
                 camera_id=expected_camera,
                 num_frames=frames_available,
-                staging_buffer_1=staging_buffer_1,
-                staging_buffer_2=staging_buffer_2
+                original_buffer=original_buffer,
             )
             
             if success:
