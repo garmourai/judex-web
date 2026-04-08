@@ -11,7 +11,6 @@ import numpy as np
 
 from ...inference.inference import get_trajectory_color
 from ...triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
-from ..trajectory.select_best import LAST_FRAMES_TO_SKIP
 from .utils import reproject_point
 
 # Overlay text: white on dark panels. HUD + trajectory labels +50% vs prior; cost panel matches HUD.
@@ -203,9 +202,9 @@ def create_visualization_from_triangulation(
         print("[CorrelationWorker]    ❌ Camera 1 visualization requires OriginalFrameBuffer")
         return
 
-    jsonl_ranges = [(max(0, s - LAST_FRAMES_TO_SKIP), e) for s, e in frame_segments]
-    f_min = min(s for s, _ in jsonl_ranges)
-    f_max = max(e for _, e in frame_segments)
+    segment_ranges = [(int(s), int(e)) for s, e in frame_segments]
+    f_min = min(s for s, _ in segment_ranges)
+    f_max = max(e for _, e in segment_ranges)
 
     with open(camera_1_cam_path, "rb") as f:
         camera_1 = pickle.load(f)
@@ -216,11 +215,12 @@ def create_visualization_from_triangulation(
     frame_removed_trajectory_map: Dict[int, List] = {}
     _data_dir = tracker_base_dir if tracker_base_dir is not None else output_dir
     jsonl_path = os.path.join(_data_dir, "trajectory_selection.jsonl")
-    selection_by_frame = _load_trajectory_selection_jsonl(jsonl_path, jsonl_ranges)
+    selection_by_frame = _load_trajectory_selection_jsonl(jsonl_path, segment_ranges)
+    no_jsonl_for_range = not selection_by_frame
     if not selection_by_frame:
         print(
             f"[CorrelationWorker]    ⚠️  trajectory_selection.jsonl missing or empty for range "
-            f"[{f_min}, {f_max}]: {jsonl_path} — writing HUD-only / placeholder frames"
+            f"[{f_min}, {f_max}]: {jsonl_path} — writing plain video (no trajectory overlays)"
         )
 
     frame_trajectory_map, trajectory_history, frame_removed_trajectory_map = _build_traj_maps_from_selection(
@@ -236,13 +236,14 @@ def create_visualization_from_triangulation(
     for traj_id in trajectory_history:
         trajectory_history[traj_id].sort(key=lambda x: x[0])
 
-    dense_indices = set(range(f_min, f_max + 1))
-    frame_dict_cam1 = original_buffer.get_frames_for_sync_frames(dense_indices)
+    render_frame_ids = list(range(f_min, f_max + 1))
+    frame_id_set = set(render_frame_ids)
+    frame_dict_cam1 = original_buffer.get_frames_for_sync_frames(frame_id_set)
     print(
-        f"[CorrelationWorker]    🗺️  OriginalFrameBuffer dense viz: frame_id ∈ [{f_min}, {f_max}], "
-        f"retrieved {len(frame_dict_cam1)}/{len(dense_indices)} cam1 frames from buffer"
+        f"[CorrelationWorker]    🗺️  OriginalFrameBuffer JSONL viz: frame_id ∈ "
+        f"[{render_frame_ids[0]}, {render_frame_ids[-1]}], "
+        f"retrieved {len(frame_dict_cam1)}/{len(render_frame_ids)} cam1 frames from buffer"
     )
-
     fw, fh = original_buffer.get_original_frame_size()
     if fw is not None and fh is not None and int(fw) > 0 and int(fh) > 0:
         black_placeholder = np.zeros((int(fh), int(fw), 3), dtype=np.uint8)
@@ -263,7 +264,10 @@ def create_visualization_from_triangulation(
     left_hud_right_x = 10 + hud_w
     left_hud_bottom_y = 10 + overlay_height
 
-    print("[CorrelationWorker]    🔄 Reprojecting 3D coordinates to camera 1 frames (dense range)...")
+    print(
+        "[CorrelationWorker]    🔄 Reprojecting 3D coordinates to camera 1 frames "
+        f"({'(continuous plain frames; no JSONL)' if no_jsonl_for_range else '(continuous frames + JSONL overlays)'})..."
+    )
 
     # Helper function to get trail points for a trajectory up to current frame
     def get_trail_points(traj_id: int, current_frame: int, n: int) -> List[Tuple[float, float, float]]:
@@ -297,7 +301,7 @@ def create_visualization_from_triangulation(
     trajectory_points_count = 0
     total_raw_points_drawn = 0
 
-    for frame_idx in range(f_min, f_max + 1):
+    for frame_idx in render_frame_ids:
         cam_stream_idx = frame_idx
         entry = all_frame_data.get(frame_idx)
         if entry is not None:
@@ -306,10 +310,10 @@ def create_visualization_from_triangulation(
             coords_list = []
 
         pref = frame_dict_cam1.get(frame_idx)
-        if pref is not None:
-            frame_img = pref.copy()
-        else:
+        if pref is None:
             frame_img = black_placeholder.copy()
+        else:
+            frame_img = pref.copy()
 
         frame_raw_points = len(coords_list) if coords_list else 0
         frame_traj_points = 0

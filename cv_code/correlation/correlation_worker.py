@@ -585,6 +585,9 @@ def correlation_worker(
                     "or ensure OriginalFrameBuffer has decoded at least one frame."
                 )
             tw, th = int(tw), int(th)
+            inference_done_now = (
+                inference_done_event is not None and inference_done_event.is_set()
+            )
             stored_trajectories, _, traj_folder, trajectory_context = create_trajectories_realtime(
                 segment=segment,
                 output_dir=correlation_output_dir,
@@ -624,7 +627,15 @@ def correlation_worker(
                     removed_trajectories,
                     filter_stats,
                     frame_decisions,
-                ) = get_best_point_each_frame(stored_trajectories, segment)
+                ) = get_best_point_each_frame(
+                    stored_trajectories,
+                    segment,
+                    last_frames_to_skip=(
+                        0
+                        if inference_done_now
+                        else LAST_FRAMES_TO_SKIP
+                    ),
+                )
 
                 trajectory_jsonl_path = _append_trajectory_selection_jsonl(
                     correlation_output_dir,
@@ -707,25 +718,43 @@ def correlation_worker(
             # Optional: cam1 overlay videos (timed separately)
             if enable_visualization and original_buffer is not None:
                 viz_overlay_t0 = time.time()
-                viz_segment = (
-                    max(0, segment[0] - LAST_FRAMES_TO_SKIP),
-                    segment[1],
+                inference_done = (
+                    inference_done_event is not None and inference_done_event.is_set()
                 )
-                create_visualization_from_triangulation(
-                    frame_segments=[viz_segment],
-                    output_dir=correlation_output_dir,
-                    original_buffer=original_buffer,
-                    camera_1_cam_path=camera_1_cam_path,
-                    camera_1_id=camera_1_id,
-                    camera_1_csv_path=camera_1_csv_path,
-                    profiler=profiler,
-                    trajectory_data=all_trajectory_data,  # Kept trajectories
-                    removed_trajectory_data={segment: removed_trajectories}
-                    if removed_trajectories
-                    else None,
-                    trail_length=10,
-                    show_trajectory_labels=True,
+                viz_start = (
+                    segment[0]
+                    if inference_done
+                    else max(0, segment[0] - LAST_FRAMES_TO_SKIP)
                 )
+                viz_end = segment[1] if inference_done else (segment[1] - LAST_FRAMES_TO_SKIP)
+                if viz_end >= viz_start:
+                    viz_segment = (viz_start, viz_end)
+                    print(
+                        f"[CorrelationWorker]    ├─ viz range {viz_start}-{viz_end} "
+                        f"({'final_batch_full_end' if inference_done else 'non_final_end_minus_skip'})",
+                        flush=True,
+                    )
+                    create_visualization_from_triangulation(
+                        frame_segments=[viz_segment],
+                        output_dir=correlation_output_dir,
+                        original_buffer=original_buffer,
+                        camera_1_cam_path=camera_1_cam_path,
+                        camera_1_id=camera_1_id,
+                        camera_1_csv_path=camera_1_csv_path,
+                        profiler=profiler,
+                        trajectory_data=all_trajectory_data,  # Kept trajectories
+                        removed_trajectory_data={segment: removed_trajectories}
+                        if removed_trajectories
+                        else None,
+                        trail_length=10,
+                        show_trajectory_labels=True,
+                    )
+                else:
+                    print(
+                        f"[CorrelationWorker]    ├─ viz skipped: non-final range empty "
+                        f"(segment={segment[0]}-{segment[1]}, LAST_FRAMES_TO_SKIP={LAST_FRAMES_TO_SKIP})",
+                        flush=True,
+                    )
                 t_viz_overlay = time.time() - viz_overlay_t0
                 if profiler:
                     profiler.record(

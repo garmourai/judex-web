@@ -223,8 +223,11 @@ class DetectionTree:
             latest_frame = max(traj.detections.keys())
             frame_gap = self.latest_frame_number - latest_frame
             if frame_gap <= frame_gap_threshold:
+                all_frames = sorted(traj.detections.keys())
+                frames_to_keep = all_frames[-frame_gap_threshold:]
                 detection_states = {}
-                for frame_num, det in traj.detections.items():
+                for frame_num in frames_to_keep:
+                    det = traj.detections[frame_num]
                     detection_states[frame_num] = DetectionState(
                         x=det.x, y=det.y, z=det.z, frame_number=det.frame_number, in_motion=det.in_motion, can_pick=det.can_pick
                     )
@@ -261,9 +264,21 @@ class DetectionTree:
             queue.has_overlap = queue_state.has_overlap
             self.queues.append(queue)
 
+    def _store_queue_detections(self):
+        """Create stored trajectory copies from remaining queue data without destroying the queues."""
+        for queue in self.queues:
+            if not queue.detections:
+                continue
+            temp_traj = Trajectory()
+            for det_coords, det_frame in queue.detections:
+                temp_traj.add_detection(det_coords, det_frame)
+            if len(temp_traj.detections) > 0:
+                self.stored_trajectories.append(temp_traj)
+
     def finalize_for_handoff(self, current_frame: int, frame_gap_threshold: int = 10):
         newly_stored = []
         self.process_queues(current_frame)
+        self._store_queue_detections()
         for key, traj in list(self.trajectories.items()):
             if traj is None:
                 continue
@@ -277,13 +292,15 @@ class DetectionTree:
                     self.filled_frames[i] = 1
                 for i in list(traj.net_hit_frames.keys()):
                     self.net_hit_frames[i] = 1
-                first_f = min(traj.detections.keys())
-                last_f = max(traj.detections.keys())
-                # print(
-                #     f"[CorrelationWorker]   [Tree] Finalize-handoff store trajectory id={key} "
-                #     f"frames={first_f}->{last_f} points={len(traj.detections)} frame_gap={frame_gap}"
-                # )
                 self.stored_trajectories.append(traj)
                 newly_stored.append(traj)
                 self.trajectories[key] = None
+            else:
+                traj_copy = Trajectory()
+                traj_copy.detections = dict(traj.detections)
+                traj_copy.has_motion = traj.has_motion
+                traj_copy.filled_frames = dict(traj.filled_frames)
+                traj_copy.net_hit_frames = dict(traj.net_hit_frames)
+                self.stored_trajectories.append(traj_copy)
+                newly_stored.append(traj_copy)
         return newly_stored

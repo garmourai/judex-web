@@ -88,6 +88,7 @@ def _active_candidates_payload(
 def get_best_point_each_frame(
     trajectories: List[Trajectory],
     segment: Tuple[int, int],
+    last_frames_to_skip: int = LAST_FRAMES_TO_SKIP,
 ) -> Tuple[List[Trajectory], List[Trajectory], List[Dict[str, Any]], List[Dict[str, Any]]]:
     start_frame, end_frame = segment
     per_frame_stats: List[Dict[str, Any]] = []
@@ -97,8 +98,9 @@ def get_best_point_each_frame(
         for frame_num, detection in trajectory.detections.items():
             frame_to_trajectories.setdefault(frame_num, []).append((traj_idx, detection))
 
+    tail_skip = max(0, int(last_frames_to_skip))
     low = max(0, start_frame - LAST_FRAMES_TO_SKIP)
-    high = end_frame - LAST_FRAMES_TO_SKIP
+    high = end_frame - tail_skip
     frames_to_process = sorted(f for f in frame_to_trajectories.keys() if low <= f <= high)
     trajectories_to_remove = set()
 
