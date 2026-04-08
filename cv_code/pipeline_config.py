@@ -13,32 +13,46 @@ from typing import Optional, List, Tuple
 class PipelineConfig:
     """
     Configuration for the realtime processing pipeline.
-    
+
     This class holds all paths, IDs, and settings needed to run
     the realtime inference pipeline after initial setup is complete.
+
+    TrackNet-related fields (heatmap threshold, batch/seq, visualization) are
+    required — no hidden defaults — so callers must pass them explicitly
+    (e.g. from run_cv_pipeline.py).
     """
-    
+
     # Camera IDs
     camera_1_id: str
     camera_2_id: str
+
+    # TrackNet / RealtimeInference (required; pass explicitly from the runner script)
+    # Heatmap binarization: pixel is "on" if model output > this threshold.
+    tracknet_heatmap_threshold: float
+    tracknet_visualization_fps: float
+    tracknet_batch_size: int
+    tracknet_seq_len: int
+    # None = let RealtimeInference derive tracknet_overlay path from unique_output_dir / camera_1_output_dir
+    tracknet_visualization_dir: Optional[str]
+
     camera_3_id: Optional[str] = None
     camera_4_id: Optional[str] = None
-    
+
     # Video paths
     camera_1_video_path: str = ""
     camera_2_video_path: str = ""
-    
+
     # Output directories
     camera_1_output_dir: str = ""
     camera_2_output_dir: str = ""
     unique_output_dir: str = ""
-    
+
     # Calibration paths
     camera_1_calibration_folder: str = ""
     camera_2_calibration_folder: str = ""
     camera_1_object_path: str = ""
     camera_2_object_path: str = ""
-    
+
     # Metadata paths
     camera_1_json_path: str = ""
     camera_2_json_path: str = ""
@@ -53,14 +67,12 @@ class PipelineConfig:
     # Model files
     tracknet_file: str = ""
     yolo_file: str = ""
-    # TrackNet output heatmap binarization: pixel is "on" if sigmoid/logit output > this (was hardcoded 0.25).
-    tracknet_heatmap_threshold: float = 0.25
-    
+
     # Triplet realtime inputs
     triplet_csv_path: str = ""
     source_segments_dir: str = ""
     sink_segments_dir: str = ""
-    
+
     # Processing settings
     match_type: str = "singles"
     start_end_frames: List[List[int]] = field(default_factory=lambda: [[0, 10000]])
@@ -73,10 +85,7 @@ class PipelineConfig:
     enable_stitched_visualization: bool = False
     # TrackNet: draw predict_multi_location bboxes on TrackNet-sized frames and write one MP4 per inference batch.
     enable_tracknet_visualization: bool = False
-    tracknet_visualization_fps: float = 30.0
-    # If None and unique_output_dir is set, uses unique_output_dir/tracknet_overlay.
-    tracknet_visualization_dir: Optional[str] = None
-    
+
     # Video info (populated after setup)
     camera_1_total_frames: int = 0
     camera_2_total_frames: int = 0
@@ -95,14 +104,14 @@ class PipelineConfig:
         if self.start_end_frames and len(self.start_end_frames) > 0:
             return self.start_end_frames[0][0]
         return 0
-    
+
     @property
     def end_frame(self) -> int:
         """Get the ending frame from start_end_frames."""
         if self.start_end_frames and len(self.start_end_frames) > 0:
             return self.start_end_frames[0][1]
         return 10000
-    
+
     def __repr__(self) -> str:
         return (
             f"PipelineConfig(\n"
@@ -113,5 +122,3 @@ class PipelineConfig:
             f"  frames=[{self.start_frame}, {self.end_frame}]\n"
             f")"
         )
-
-

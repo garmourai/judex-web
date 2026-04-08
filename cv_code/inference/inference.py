@@ -103,14 +103,14 @@ class RealtimeInference:
         camera_2_id: str,
         camera_1_output_dir: str,
         camera_2_output_dir: str,
-        batch_size: int = 4,
-        seq_len: int = 8,
+        batch_size: int,
+        seq_len: int,
+        heatmap_threshold: float,
         profiler=None,
-        heatmap_threshold: float = 0.25,
         *,
         unique_output_dir: str = "",
         enable_tracknet_visualization: bool = False,
-        tracknet_visualization_fps: float = 30.0,
+        tracknet_visualization_fps: float,
         tracknet_visualization_dir: Optional[str] = None,
     ):
         self.tracknet_file = tracknet_file
@@ -132,6 +132,7 @@ class RealtimeInference:
             self.tracknet_visualization_dir = os.path.join(
                 os.path.dirname(os.path.abspath(camera_1_output_dir)), "tracknet_overlay"
             )
+        self.unique_output_dir = unique_output_dir or ""
 
         # Create output directories
         os.makedirs(camera_1_output_dir, exist_ok=True)
@@ -205,12 +206,13 @@ class RealtimeInference:
         frame_list = [frame_data.frame for frame_data in frames]  # Keep as BGR
         frame_arr = np.array(frame_list)[:, :, :, ::-1]  # Convert to RGB using slicing
         return frame_arr
-    
+
     def _process_batch(
         self,
         frames: List[FrameData],
         camera_mapping: List[str],
-        camera_id: Optional[str] = None
+        camera_id: Optional[str] = None,
+        profile_batch: int = 0,
     ) -> Dict[str, List]:
         """
         Process a batch of frames through TrackNet (all frames together).
@@ -219,6 +221,7 @@ class RealtimeInference:
             frames: List of FrameData objects (96 frames total, mixed from both cameras)
             camera_mapping: List of camera IDs corresponding to each frame in frames
             camera_id: Optional camera ID for debugging (to save first batch input)
+            profile_batch: Per-camera batch index
             
         Returns:
             Dictionary with predictions: {'Frame': [], 'X': [], 'Y': [], 'Visibility': []}
@@ -274,7 +277,10 @@ class RealtimeInference:
         is_first_batch_for_camera = camera_id not in self._median_calculated_for_cameras
         
         if is_first_batch_for_camera:
-            print(f"[InferenceWorker]    🔄 First batch for {camera_id} - will calculate median from first 30 frames")
+            print(
+                f"[InferenceWorker]    🔄 First batch for {camera_id} - "
+                f"will calculate median from first 30 frames"
+            )
             
             # Enable saving processed median for debug camera (DISABLED)
             # if camera_id == "2c-cf-67-16-73-9a":
@@ -289,7 +295,7 @@ class RealtimeInference:
             # Median already calculated for this camera, will be reused by dataset
             Shuttlecock_Trajectory_Dataset._save_processed_median = False
             Shuttlecock_Trajectory_Dataset._processed_median_debug_dir = None
-        
+
         # Create dataset with camera_id for per-camera median storage
         dataset = Shuttlecock_Trajectory_Dataset(
             root_dir=self.camera_1_output_dir,
@@ -299,7 +305,7 @@ class RealtimeInference:
             bg_mode='concat',
             frame_arr=frame_arr,
             padding=True,
-            camera_id=camera_id  # Pass camera_id for per-camera median storage
+            camera_id=camera_id,  # Pass camera_id for per-camera median storage
         )
         dataset_duration = time.time() - dataset_start
         
@@ -339,7 +345,7 @@ class RealtimeInference:
                 for_loop_duration = time.time() - for_loop_start
             x = x.float()
             temp_shape = x.shape
-            
+
             # Save first batch input for camera 2c-cf-67-16-73-9a for debugging (DISABLED)
             # if camera_id == "2c-cf-67-16-73-9a" and step == 0 and camera_id not in self._saved_first_batch_input:
             #     self._save_first_batch_input(
@@ -645,7 +651,10 @@ class RealtimeInference:
             # Process batch and record processing time
             inference_start = time.time()
             all_predictions, viz_bboxes_by_frame_pos = self._process_batch(
-                frames_batch, camera_mapping, camera_id=camera_id
+                frames_batch,
+                camera_mapping,
+                camera_id=camera_id,
+                profile_batch=profile_batch,
             )
             inference_duration = time.time() - inference_start
             if self.profiler:
