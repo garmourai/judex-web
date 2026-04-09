@@ -1,9 +1,0 @@
-{
-  "is_fisheye": false,
-  "chessboard_dims": [
-    6,
-    8
-  ],
-  "square_size_mm": 25,
-  "camera_name": "2.8mm_lens"
-}
