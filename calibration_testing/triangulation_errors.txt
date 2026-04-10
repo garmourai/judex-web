@@ -1,5 +1,5 @@
 # Triangulation 3D error: |X_triangulated - X_reference| (meters)
-# UTC time: 2026-04-10T10:55:08.094204+00:00
+# UTC time: 2026-04-10T16:31:08.280558+00:00
 # mode: court_info.json (paired by point_names)
 # source_dir: /home/ubuntu/test_work/judex-web/calibration_testing/source
 # sink_dir:   /home/ubuntu/test_work/judex-web/calibration_testing/sink

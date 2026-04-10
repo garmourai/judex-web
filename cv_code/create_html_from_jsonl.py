@@ -8,8 +8,13 @@ Rules implemented:
 - Preserve file order (assumed incremental frame_id).
 - Use only current_selected_point + selected_trajectory_id (no fallbacks).
 - Plot one selected 3D point per frame (no trajectory/trail model).
-- Draw court overlay from world_points_3D.txt when available.
+- Every integer frame from min(frame_id) to max(frame_id) is included (gaps where JSONL omits
+  no-detection frames are filled; those steps show an empty trail).
+- Draw court from a world-points TXT (``name x y z`` or ``x y z`` per line): all points as
+  markers; outer boundary = convex hull of near-ground points (or AABB if scipy unavailable).
 - Display frame number in title and fixed annotation.
+- 3D scene uses a display frame: origin (0,0,0) at the court corner with minimum world X and Y
+  (top-left in view), +X to the right, +Y downward, +Z upward; marker hovers still show world XYZ.
 """
 
 from __future__ import annotations
@@ -31,14 +36,33 @@ DEFAULT_HTML_OUTPUT = os.path.join(
 DEFAULT_WORLD_POINTS_PATH = (
     "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/worldpickleball.txt"
 )
+# Fixed default z-axis extent (meters) for the 3D scene; two vertical guides span this range.
+DEFAULT_SCENE_Z_RANGE = (-2.0, 10.0)
+
+# Plot uses display axes; hovers show world coordinates (meters).
+MARKER_HOVER_WORLD = (
+    "world x: %{customdata[0]:.4f} m<br>world y: %{customdata[1]:.4f} m<br>world z: %{customdata[2]:.4f} m"
+    "<extra></extra>"
+)
 
 
 def _load_world_points(world_points_file: Optional[str]) -> Optional[np.ndarray]:
-    """Load world points from explicit path or local fallback (name x y z format only)."""
+    """Load world points from explicit path or fallbacks (``x y z`` or ``name x y z`` per line)."""
     candidates: List[str] = []
     if world_points_file:
         candidates.append(world_points_file)
     candidates.append(DEFAULT_WORLD_POINTS_PATH)
+    candidates.append(
+        os.path.normpath(
+            os.path.join(
+                os.path.dirname(__file__),
+                "..",
+                "calibration_testing",
+                "source",
+                "world_points.txt",
+            )
+        )
+    )
     candidates.append(os.path.join(os.path.dirname(__file__), "world_points_3D.txt"))
 
     for path in candidates:
@@ -51,9 +75,9 @@ def _load_world_points(world_points_file: Optional[str]) -> Optional[np.ndarray]
                     line = line.strip()
                     if not line or line.startswith("#"):
                         continue
-                    parts = line.split()
-                    # Strict format: <name> <x> <y> <z>
-                    if len(parts) < 4:
+                    parts = line.replace(",", " ").split()
+                    # ``x y z`` or ``name x y z`` (last three tokens are coordinates)
+                    if len(parts) < 3:
                         continue
                     nums = parts[-3:]
                     try:
@@ -66,6 +90,31 @@ def _load_world_points(world_points_file: Optional[str]) -> Optional[np.ndarray]
         except Exception:
             continue
     return None
+
+
+def _convex_hull_closed_loop(
+    points_xyz: np.ndarray, z_ground_tol: float = 0.55
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]]:
+    """
+    Closed court boundary in the XY plane: 2D convex hull of near-ground points.
+    Uses scipy if available; returns None if hull cannot be built.
+    """
+    if points_xyz.shape[0] < 3:
+        return None
+    near = points_xyz[np.abs(points_xyz[:, 2]) <= z_ground_tol]
+    g = near if near.shape[0] >= 3 else points_xyz
+    xy = g[:, :2].astype(np.float64)
+    try:
+        from scipy.spatial import ConvexHull
+
+        hull = ConvexHull(xy)
+        idx = hull.vertices
+    except Exception:
+        return None
+    x_closed = np.append(g[idx, 0], g[idx[0], 0])
+    y_closed = np.append(g[idx, 1], g[idx[0], 1])
+    z_closed = np.append(g[idx, 2], g[idx[0], 2])
+    return x_closed, y_closed, z_closed
 
 
 def _parse_jsonl_selected_points(
@@ -135,29 +184,46 @@ def create_3d_trajectory_visualization_from_jsonl(
     if not frame_ids:
         raise ValueError("No valid JSON lines with integer frame_id were found.")
 
-    # Preserve file order and keep first occurrence for animation ordering.
+    # Unique frame ids in file order (sparse: only frames that appear in JSONL at least once).
     seen = set()
-    ordered_frames: List[int] = []
+    ordered_sparse: List[int] = []
     for fid in frame_ids:
         if fid in seen:
             continue
         seen.add(fid)
-        ordered_frames.append(fid)
+        ordered_sparse.append(fid)
+
+    # Dense range: include every integer between min and max so frames with no JSONL line
+    # (typical when the pipeline skips writing no-detection frames) are still animated empty.
+    lo, hi = min(ordered_sparse), max(ordered_sparse)
+    ordered_frames = list(range(lo, hi + 1))
 
     world_points = _load_world_points(world_points_file)
+    boundary_hull: Optional[Tuple[np.ndarray, np.ndarray, np.ndarray]] = None
 
     if world_points is not None:
-        main_court_points = world_points[:16] if world_points.shape[0] >= 16 else world_points
-        min_x, max_x = float(np.min(main_court_points[:, 0])), float(np.max(main_court_points[:, 0]))
-        min_y, max_y = float(np.min(main_court_points[:, 1])), float(np.max(main_court_points[:, 1]))
-        unique_y = np.unique(np.round(main_court_points[:, 1], 3))
+        main_court_points = world_points
+        min_x = float(np.min(world_points[:, 0]))
+        max_x = float(np.max(world_points[:, 0]))
+        min_y = float(np.min(world_points[:, 1]))
+        max_y = float(np.max(world_points[:, 1]))
+        min_z = float(np.min(world_points[:, 2]))
+        max_z = float(np.max(world_points[:, 2]))
+        unique_y = np.unique(np.round(world_points[:, 1], 3))
         net_candidates = unique_y[np.isclose(unique_y, 6.7, atol=0.02)] if unique_y.size else []
         net_y = float(net_candidates[0]) if np.size(net_candidates) > 0 else (min_y + max_y) / 2.0
         center_x = (min_x + max_x) / 2.0
         nvz_offset_m = 2.1336
         nvz_y_top = net_y - nvz_offset_m
         nvz_y_bottom = net_y + nvz_offset_m
-        axis_limits = {"x": [13.0, -5.0], "y": [-5.0, 17.0], "z": [-2.0, 10.0]}
+        boundary_hull = _convex_hull_closed_loop(world_points)
+        pad = 1.0
+        # X/Y reversed to match court world frame; Z uses fixed default extent (see DEFAULT_SCENE_Z_RANGE).
+        axis_limits = {
+            "x": [max_x + pad, min_x - pad],
+            "y": [max_y + pad, min_y - pad],
+            "z": [DEFAULT_SCENE_Z_RANGE[0], DEFAULT_SCENE_Z_RANGE[1]],
+        }
     else:
         main_court_points = None
         min_x, max_x = -1.0, 7.0
@@ -167,16 +233,37 @@ def create_3d_trajectory_visualization_from_jsonl(
         nvz_offset_m = 2.1336
         nvz_y_top = net_y - nvz_offset_m
         nvz_y_bottom = net_y + nvz_offset_m
-        axis_limits = {"x": [13.0, -5.0], "y": [-5.0, 17.0], "z": [-2.0, 10.0]}
+
+    # Display frame: (0,0,0) at top-left = min world X and Y; +X right, +Y down, +Z up.
+    pad = 1.0
+    ox = min_x
+    oy = min_y
+    span_x = max_x - min_x
+    span_y = max_y - min_y
+    axis_limits = {
+        "x": [-pad, span_x + pad],
+        "y": [span_y + pad, -pad],
+        "z": [DEFAULT_SCENE_Z_RANGE[0], DEFAULT_SCENE_Z_RANGE[1]],
+    }
 
     def _court_traces(showlegend: bool):
         traces: List["go.Scatter3d"] = []
+        cx_d = center_x - ox
+        net_d = net_y - oy
+        nvz_top_d = nvz_y_top - oy
+        nvz_bot_d = nvz_y_bottom - oy
         # Anchor points force a stable global plotting cube across chunks.
+        ax0, ax1 = axis_limits["x"][0], axis_limits["x"][1]
+        ay0, ay1 = axis_limits["y"][0], axis_limits["y"][1]
+        az0, az1 = axis_limits["z"][0], axis_limits["z"][1]
+        x_min, x_max = min(ax0, ax1), max(ax0, ax1)
+        y_min, y_max = min(ay0, ay1), max(ay0, ay1)
+        z_min, z_max = min(az0, az1), max(az0, az1)
         traces.append(
             go.Scatter3d(
-                x=[-5.0, 13.0],
-                y=[-5.0, 17.0],
-                z=[-2.0, 10.0],
+                x=[x_min, x_max],
+                y=[y_min, y_max],
+                z=[z_min, z_max],
                 mode="markers",
                 marker=dict(size=1, color="rgba(0,0,0,0)"),
                 name="",
@@ -184,82 +271,133 @@ def create_3d_trajectory_visualization_from_jsonl(
                 hoverinfo="skip",
             )
         )
-        if main_court_points is not None:
-            traces.append(
-                go.Scatter3d(
-                    x=main_court_points[:, 0],
-                    y=main_court_points[:, 1],
-                    z=main_court_points[:, 2],
-                    mode="markers",
-                    marker=dict(size=3, color="rgba(100, 100, 100, 0.6)"),
-                    name="Court Points",
-                    showlegend=showlegend,
-                )
-            )
+        z_lo, z_hi = z_min, z_max
         traces.append(
             go.Scatter3d(
-                x=[min_x, max_x, max_x, min_x, min_x],
-                y=[min_y, min_y, max_y, max_y, min_y],
-                z=[0, 0, 0, 0, 0],
+                x=[0.0, 0.0],
+                y=[net_d, net_d],
+                z=[z_lo, z_hi],
                 mode="lines",
-                line=dict(color="rgba(139, 0, 0, 1.0)", width=8),
-                name="Court Boundary",
+                line=dict(color="rgba(90, 90, 90, 0.75)", width=4),
+                name="Z extent (vertical)",
                 showlegend=showlegend,
+                hoverinfo="skip",
             )
         )
         traces.append(
             go.Scatter3d(
-                x=[min_x, max_x],
-                y=[net_y, net_y],
+                x=[span_x, span_x],
+                y=[net_d, net_d],
+                z=[z_lo, z_hi],
+                mode="lines",
+                line=dict(color="rgba(90, 90, 90, 0.75)", width=4),
+                name="" if showlegend else None,
+                showlegend=False,
+                hoverinfo="skip",
+            )
+        )
+        if main_court_points is not None:
+            wx = main_court_points[:, 0]
+            wy = main_court_points[:, 1]
+            wz = main_court_points[:, 2]
+            traces.append(
+                go.Scatter3d(
+                    x=wx - ox,
+                    y=wy - oy,
+                    z=wz,
+                    mode="markers",
+                    marker=dict(size=4, color="rgba(100, 100, 100, 0.75)"),
+                    name="Court points (world txt)",
+                    showlegend=showlegend,
+                    customdata=np.column_stack((wx, wy, wz)),
+                    hovertemplate=MARKER_HOVER_WORLD,
+                )
+            )
+        if boundary_hull is not None:
+            hx, hy, hz = boundary_hull
+            traces.append(
+                go.Scatter3d(
+                    x=hx - ox,
+                    y=hy - oy,
+                    z=hz,
+                    mode="lines",
+                    line=dict(color="rgba(139, 0, 0, 1.0)", width=8),
+                    name="Court boundary (convex hull)",
+                    showlegend=showlegend,
+                    hoverinfo="skip",
+                )
+            )
+        else:
+            traces.append(
+                go.Scatter3d(
+                    x=[0.0, span_x, span_x, 0.0, 0.0],
+                    y=[0.0, 0.0, span_y, span_y, 0.0],
+                    z=[0, 0, 0, 0, 0],
+                    mode="lines",
+                    line=dict(color="rgba(139, 0, 0, 1.0)", width=8),
+                    name="Court Boundary (AABB fallback)",
+                    showlegend=showlegend,
+                    hoverinfo="skip",
+                )
+            )
+        traces.append(
+            go.Scatter3d(
+                x=[0.0, span_x],
+                y=[net_d, net_d],
                 z=[0, 0],
                 mode="lines",
                 line=dict(color="rgba(220, 20, 60, 1.0)", width=6),
                 name="Net (top view)",
                 showlegend=showlegend,
+                hoverinfo="skip",
             )
         )
         traces.append(
             go.Scatter3d(
-                x=[min_x, max_x],
-                y=[nvz_y_top, nvz_y_top],
+                x=[0.0, span_x],
+                y=[nvz_top_d, nvz_top_d],
                 z=[0, 0],
                 mode="lines",
                 line=dict(color="rgba(255, 165, 0, 1.0)", width=6),
                 name="Kitchen Line",
                 showlegend=showlegend,
+                hoverinfo="skip",
             )
         )
         traces.append(
             go.Scatter3d(
-                x=[min_x, max_x],
-                y=[nvz_y_bottom, nvz_y_bottom],
+                x=[0.0, span_x],
+                y=[nvz_bot_d, nvz_bot_d],
                 z=[0, 0],
                 mode="lines",
                 line=dict(color="rgba(255, 165, 0, 1.0)", width=6),
                 name="" if showlegend else None,
                 showlegend=False,
+                hoverinfo="skip",
             )
         )
         traces.append(
             go.Scatter3d(
-                x=[center_x, center_x],
-                y=[min_y, nvz_y_top],
+                x=[cx_d, cx_d],
+                y=[0.0, nvz_top_d],
                 z=[0, 0],
                 mode="lines",
                 line=dict(color="rgba(80, 80, 80, 1.0)", width=4),
                 name="Service Centerline",
                 showlegend=showlegend,
+                hoverinfo="skip",
             )
         )
         traces.append(
             go.Scatter3d(
-                x=[center_x, center_x],
-                y=[nvz_y_bottom, max_y],
+                x=[cx_d, cx_d],
+                y=[nvz_bot_d, span_y],
                 z=[0, 0],
                 mode="lines",
                 line=dict(color="rgba(80, 80, 80, 1.0)", width=4),
                 name="" if showlegend else None,
                 showlegend=False,
+                hoverinfo="skip",
             )
         )
         return traces
@@ -304,13 +442,15 @@ def create_3d_trajectory_visualization_from_jsonl(
             tz = [p[2] for p in trail_points]
             init_traces.append(
                 go.Scatter3d(
-                    x=tx,
-                    y=ty,
+                    x=[x - ox for x in tx],
+                    y=[y - oy for y in ty],
                     z=tz,
                     mode="markers",
                     marker=dict(size=5, color="rgb(0, 120, 255)", symbol="circle"),
                     name="Selected Point (last 10 frames)",
                     showlegend=True,
+                    customdata=np.column_stack((tx, ty, tz)),
+                    hovertemplate=MARKER_HOVER_WORLD,
                 )
             )
         else:
@@ -323,6 +463,8 @@ def create_3d_trajectory_visualization_from_jsonl(
                     marker=dict(size=5, color="rgb(0, 120, 255)", symbol="circle"),
                     name="Selected Point (last 10 frames)",
                     showlegend=True,
+                    visible=False,
+                    hoverinfo="skip",
                 )
             )
 
@@ -343,13 +485,16 @@ def create_3d_trajectory_visualization_from_jsonl(
                 tz = [p[2] for p in trail_points]
                 frame_traces.append(
                     go.Scatter3d(
-                        x=tx,
-                        y=ty,
+                        x=[x - ox for x in tx],
+                        y=[y - oy for y in ty],
                         z=tz,
                         mode="markers",
                         marker=dict(size=5, color="rgb(0, 120, 255)", symbol="circle"),
                         name="Selected Point (last 10 frames)",
                         showlegend=False,
+                        visible=True,
+                        customdata=np.column_stack((tx, ty, tz)),
+                        hovertemplate=MARKER_HOVER_WORLD,
                     )
                 )
             else:
@@ -362,6 +507,8 @@ def create_3d_trajectory_visualization_from_jsonl(
                         marker=dict(size=5, color="rgb(0, 120, 255)", symbol="circle"),
                         name="Selected Point (last 10 frames)",
                         showlegend=False,
+                        visible=False,
+                        hoverinfo="skip",
                     )
                 )
 
@@ -386,17 +533,41 @@ def create_3d_trajectory_visualization_from_jsonl(
             for fid in chunk_frames
         ]
 
+        scene_cx = span_x / 2.0
+        scene_cy = span_y / 2.0
         fig.update_layout(
             scene=dict(
                 aspectmode="data",
-                xaxis=dict(title="X (meters)", range=axis_limits["x"], showgrid=True, gridcolor="lightgray", autorange=False),
-                yaxis=dict(title="Y (meters)", range=axis_limits["y"], showgrid=True, gridcolor="lightgray", autorange=False),
-                zaxis=dict(title="Z (meters)", range=axis_limits["z"], showgrid=True, gridcolor="lightgray", autorange=False),
-                camera=dict(eye=dict(x=1.5, y=1.5, z=1.5), center=dict(x=0, y=0, z=0), up=dict(x=0, y=0, z=1)),
+                xaxis=dict(
+                    title="X (m) display, +right",
+                    range=axis_limits["x"],
+                    showgrid=True,
+                    gridcolor="lightgray",
+                    autorange=False,
+                ),
+                yaxis=dict(
+                    title="Y (m) display, +down",
+                    range=axis_limits["y"],
+                    showgrid=True,
+                    gridcolor="lightgray",
+                    autorange=False,
+                ),
+                zaxis=dict(
+                    title="Z (m) display, +up",
+                    range=axis_limits["z"],
+                    showgrid=True,
+                    gridcolor="lightgray",
+                    autorange=False,
+                ),
+                camera=dict(
+                    eye=dict(x=1.5, y=-1.5, z=1.0),
+                    center=dict(x=scene_cx, y=scene_cy, z=0),
+                    up=dict(x=0, y=0, z=1),
+                ),
                 bgcolor="rgba(240, 240, 240, 0.1)",
             ),
             title=dict(
-                text=f"{title}<br><sub>Frames {chunk_start} to {chunk_end} | selected-point-only view</sub>",
+                text=f"{title}<br><sub>Frames {chunk_start} to {chunk_end} | display origin top-left (min world X,Y); hover shows world XYZ</sub>",
                 x=0.5,
                 font=dict(size=16),
             ),
@@ -467,7 +638,8 @@ window.addEventListener('load', function() {{
         )
 
     print(
-        f"[create_html_from_jsonl] Total frames={len(ordered_frames)}, "
+        f"[create_html_from_jsonl] Total frames={len(ordered_frames)} "
+        f"(dense range {lo}..{hi}; sparse JSONL lines had {len(ordered_sparse)} unique ids), "
         f"selected_points={len(selected_by_frame)}, chunks={len(frame_chunks)}, "
         f"chunk_size={chunk_size}"
     )
@@ -492,8 +664,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         "--world-points-file",
         default=DEFAULT_WORLD_POINTS_PATH,
         help=(
-            "Path to world points txt (default: tools/pickleball_calib/worldpickleball.txt). "
-            "Expected format per line: '<name> <x> <y> <z>'."
+            "Path to world points txt (default tries tools/pickleball_calib/worldpickleball.txt, "
+            "then calibration_testing/source/world_points.txt). "
+            "Each line: x y z or name x y z (comments with #)."
         ),
     )
     p.add_argument("--title", default="3D Selected Point Visualization")

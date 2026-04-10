@@ -2,10 +2,77 @@
 Data loading and validation utilities.
 """
 
+import json
 import os
 import pickle
+from pathlib import Path
+from types import SimpleNamespace
+
+import cv2
+import numpy as np
 import pandas as pd
 from .coordinate_processor import process_coordinates
+
+
+def _coerce_pickled_camera_payload(payload, pkl_path: str):
+    """
+    Normalize calibration pickles from ``calibration_testing`` (dict with ``camera_matrix``,
+    ``dist_coeffs``, ``image_size``, …) into an object with the attributes expected by
+    :class:`Camera`.
+
+    If ``extrinsic_pose_undistorted.json`` sits next to the ``.pkl`` (same directory), load
+    ``rvec``/``tvec`` (``solve_space == "distorted"``) and set ``rotation_matrix``,
+    ``translation_vectors``, and ``projection_matrix = newK @ [R|t]`` using the same
+    ``newK`` convention as the calibration notebook (alpha=1.0).
+
+    Legacy pickles (e.g. ``cv_code.camera.Camera`` instances) are returned unchanged.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    d = payload
+    p = Path(pkl_path)
+    K = np.asarray(d["camera_matrix"], dtype=np.float64)
+    dist = np.asarray(d["dist_coeffs"], dtype=np.float64).reshape(-1, 1)
+    wh = (int(d["image_size"][0]), int(d["image_size"][1]))
+    ctype = d.get("calibration_type") or "pinhole"
+
+    if ctype == "fisheye":
+        D = dist.astype(np.float64).reshape(4, 1)
+        newK = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
+            K, D, wh, np.eye(3), balance=1.0
+        )
+        new_scaled = newK
+    else:
+        newK, _ = cv2.getOptimalNewCameraMatrix(K, dist, wh, 1.0, wh)
+        new_scaled = None
+
+    R = None
+    tvec = None
+    P = None
+    ext_path = p.resolve().parent / "extrinsic_pose_undistorted.json"
+    if ext_path.is_file():
+        extr = json.loads(ext_path.read_text(encoding="utf-8"))
+        if extr.get("solve_space") == "distorted":
+            rvec = np.asarray(extr["rvec"], dtype=np.float64).reshape(3, 1)
+            tvec = np.asarray(extr["tvec"], dtype=np.float64).reshape(3, 1)
+            R, _ = cv2.Rodrigues(rvec)
+            P = newK @ np.hstack((R, tvec))
+
+    ns = SimpleNamespace()
+    ns.camera_matrix = K
+    ns.distortion_coefficients = dist
+    ns.new_camera_matrix = newK
+    ns.new_scaled_camera_matrix = new_scaled
+    ns.calibration_type = ctype
+    ns.image_size = wh
+    ns.rotation_matrix = R
+    ns.translation_vectors = tvec
+    ns.projection_matrix = P
+    ns.calibration_rotation_vectors = d.get("rvecs")
+    ns.calibration_translation_vectors = d.get("tvecs")
+    ns.final_dimensions = None
+    return ns
 
 
 class Camera:
@@ -69,33 +136,40 @@ class DataLoader:
         with open(sink_cam_path, 'rb') as f:
             sink_cam_data = pickle.load(f)
 
-        source_cam = Camera(
-            camera_matrix=source_cam_data.camera_matrix,
-            rotation_matrix=source_cam_data.rotation_matrix,
-            translation_vectors=source_cam_data.translation_vectors,
-            calibration_rotation_vectors=source_cam_data.calibration_rotation_vectors,
-            calibration_translation_vectors=source_cam_data.calibration_translation_vectors,
-            projection_matrix=source_cam_data.projection_matrix,
-            distortion_coefficients=source_cam_data.distortion_coefficients,
-            calibration_type=source_cam_data.calibration_type,
-            final_dimensions=source_cam_data.final_dimensions,
-            new_scaled_camera_matrix=source_cam_data.new_scaled_camera_matrix,
-            new_camera_matrix=source_cam_data.new_camera_matrix,
-        )
+        source_cam_data = _coerce_pickled_camera_payload(source_cam_data, source_cam_path)
+        sink_cam_data = _coerce_pickled_camera_payload(sink_cam_data, sink_cam_path)
 
-        sink_cam = Camera(
-            camera_matrix=sink_cam_data.camera_matrix,
-            rotation_matrix=sink_cam_data.rotation_matrix,
-            translation_vectors=sink_cam_data.translation_vectors,
-            calibration_rotation_vectors=sink_cam_data.calibration_rotation_vectors,
-            calibration_translation_vectors=sink_cam_data.calibration_translation_vectors,
-            projection_matrix=sink_cam_data.projection_matrix,
-            distortion_coefficients=sink_cam_data.distortion_coefficients,
-            calibration_type=sink_cam_data.calibration_type,
-            final_dimensions=sink_cam_data.final_dimensions,
-            new_scaled_camera_matrix=sink_cam_data.new_scaled_camera_matrix,
-            new_camera_matrix=sink_cam_data.new_camera_matrix,
-        )
+        for label, cam_data, path in (
+            ("source", source_cam_data, source_cam_path),
+            ("sink", sink_cam_data, sink_cam_path),
+        ):
+            if getattr(cam_data, "projection_matrix", None) is None:
+                raise ValueError(
+                    f"{label} camera: missing projection_matrix after loading {path}. "
+                    "For calibration_testing dict PKLs, place extrinsic_pose_undistorted.json "
+                    "(notebook Step 4, solve_space: distorted) in the same folder as the .pkl."
+                )
+
+        def _to_camera(cam_data):
+            return Camera(
+                camera_matrix=cam_data.camera_matrix,
+                rotation_matrix=getattr(cam_data, "rotation_matrix", None),
+                translation_vectors=getattr(cam_data, "translation_vectors", None),
+                calibration_rotation_vectors=getattr(cam_data, "calibration_rotation_vectors", None),
+                calibration_translation_vectors=getattr(
+                    cam_data, "calibration_translation_vectors", None
+                ),
+                projection_matrix=getattr(cam_data, "projection_matrix", None),
+                distortion_coefficients=getattr(cam_data, "distortion_coefficients", None),
+                calibration_type=getattr(cam_data, "calibration_type", None),
+                final_dimensions=getattr(cam_data, "final_dimensions", None),
+                new_scaled_camera_matrix=getattr(cam_data, "new_scaled_camera_matrix", None),
+                new_camera_matrix=getattr(cam_data, "new_camera_matrix", None),
+                image_size=getattr(cam_data, "image_size", None),
+            )
+
+        source_cam = _to_camera(source_cam_data)
+        sink_cam = _to_camera(sink_cam_data)
 
         return source_cam, sink_cam
     

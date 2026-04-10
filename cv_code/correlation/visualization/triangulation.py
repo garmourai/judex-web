@@ -10,6 +10,7 @@ import cv2
 import numpy as np
 
 from ...inference.inference import get_trajectory_color
+from ..pairwise_correlation.data.data_loader import _coerce_pickled_camera_payload
 from ...triplet_csv_reader import OriginalFrameBuffer as _OriginalFrameBuffer
 from .utils import reproject_point
 
@@ -208,6 +209,12 @@ def create_visualization_from_triangulation(
 
     with open(camera_1_cam_path, "rb") as f:
         camera_1 = pickle.load(f)
+    camera_1 = _coerce_pickled_camera_payload(camera_1, camera_1_cam_path)
+    if getattr(camera_1, "projection_matrix", None) is None:
+        raise ValueError(
+            f"Camera 1 calibration at {camera_1_cam_path} has no projection_matrix after load. "
+            "For calibration_testing dict PKLs, keep extrinsic_pose_undistorted.json in the same folder."
+        )
     print(f"[CorrelationWorker]    📷 Loaded camera 1 calibration from {camera_1_cam_path}")
 
     frame_trajectory_map: Dict[int, List] = {}
