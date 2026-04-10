@@ -8,7 +8,7 @@ from cv_code.pipeline_config import PipelineConfig
 from cv_code.triplet_pipeline_runner import run_triplet_pipeline
 from cv_code.time_profiler import TimeProfiler
 
-CALIB_BASE = "/home/ubuntu/test_work/judex-web/tools/pickleball_calib/calibration_1547"
+CALIB_BASE = "/home/ubuntu/test_work/judex-web/calibration_testing"
 
 # Triplet sync CSV (single file: Source_Index, per-camera frame indices, etc.)
 TRIPLET_CSV_PATH = "/mnt/data/mar30_test/sync_reports/segments_1547/sync/hls_sync_1547_triple.csv"

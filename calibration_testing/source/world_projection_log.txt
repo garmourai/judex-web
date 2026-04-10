@@ -1,0 +1,20 @@
+# distorted = raw source.png; undistorted_newK = this overlay PNG. Same rvec,tvec as extrinsic.
+
+## world_points.txt (all points)
+
+p1  world_m=(0.0000,0.0000,0.0000)  distorted_px=(580.74,260.11)  undistorted_newK_px=(589.37,261.36)
+p2  world_m=(3.0480,0.0000,0.0000)  distorted_px=(736.36,255.64)  undistorted_newK_px=(737.13,257.40)
+p3  world_m=(6.0960,0.0000,0.0000)  distorted_px=(900.81,250.47)  undistorted_newK_px=(892.23,253.25)
+p4  world_m=(0.0000,4.5750,0.0000)  distorted_px=(517.20,329.42)  undistorted_newK_px=(528.84,327.55)
+p5  world_m=(3.0480,4.5750,0.0000)  distorted_px=(726.85,325.90)  undistorted_newK_px=(728.33,324.34)
+p6  world_m=(6.0960,4.5750,0.0000)  distorted_px=(952.89,321.39)  undistorted_newK_px=(941.45,320.92)
+p7  world_m=(0.0000,8.8350,0.0000)  distorted_px=(398.47,458.53)  undistorted_newK_px=(415.51,451.50)
+p8  world_m=(3.0480,8.8350,0.0000)  distorted_px=(708.86,460.10)  undistorted_newK_px=(711.43,452.85)
+p9  world_m=(6.0960,8.8350,0.0000)  distorted_px=(1056.08,461.14)  undistorted_newK_px=(1038.50,454.34)
+p10  world_m=(0.0000,13.4100,0.0000)  distorted_px=(17.26,880.50)  undistorted_newK_px=(35.56,867.05)
+p11  world_m=(3.0480,13.4100,0.0000)  distorted_px=(645.90,942.66)  undistorted_newK_px=(650.53,916.17)
+p12  world_m=(6.0960,13.4100,0.0000)  distorted_px=(1429.76,986.49)  undistorted_newK_px=(1419.07,977.56)
+p13  world_m=(0.0000,6.7050,0.0000)  distorted_px=(469.45,381.40)  undistorted_newK_px=(483.28,377.38)
+p14  world_m=(6.0960,6.7050,0.0000)  distorted_px=(993.46,376.42)  undistorted_newK_px=(979.68,373.47)
+p15  world_m=(0.0000,6.7050,0.9140)  distorted_px=(456.47,306.96)  undistorted_newK_px=(471.02,306.14)
+p16  world_m=(6.0960,6.7050,0.9140)  distorted_px=(1006.35,294.75)  undistorted_newK_px=(991.42,295.83)
