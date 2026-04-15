@@ -20,6 +20,7 @@ Rules implemented:
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 from typing import Dict, List, Optional, Tuple
@@ -44,6 +45,202 @@ MARKER_HOVER_WORLD = (
     "world x: %{customdata[0]:.4f} m<br>world y: %{customdata[1]:.4f} m<br>world z: %{customdata[2]:.4f} m"
     "<extra></extra>"
 )
+DEFAULT_NET_CROSSINGS_CSV = os.path.join(
+    DEFAULT_CV_OUTPUT_DIR, "correlation", "net_crossings_summary.csv"
+)
+
+
+def _load_net_crossings_csv(
+    csv_path: str,
+) -> List[Dict]:
+    """Load net_crossings_summary.csv and return rows as dicts with parsed numeric fields."""
+    rows: List[Dict] = []
+    if not csv_path or not os.path.exists(csv_path):
+        return rows
+    with open(csv_path, "r", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            parsed: Dict = {}
+            for k, v in row.items():
+                try:
+                    if "." in v:
+                        parsed[k] = float(v)
+                    else:
+                        parsed[k] = int(v)
+                except (ValueError, TypeError):
+                    parsed[k] = v
+            rows.append(parsed)
+    return rows
+
+
+EVENT_VISIBILITY_HALF_WINDOW = 7  # show marker for ±7 frames around the event (15 total)
+
+_EVENT_STYLES = {
+    "net_crossing": {
+        "name": "Net Crossing",
+        "color": "rgb(220, 20, 60)",
+        "symbol": "diamond",
+        "size": 10,
+    },
+    "bounce": {
+        "name": "Bounce Point",
+        # Scatter3d symbols are limited; open ring (same symbol), yellow vs filled crimson crossing diamond.
+        "color": "rgb(255, 214, 0)",
+        "symbol": "circle-open",
+        "size": 14,
+        "line_width": 2,
+    },
+    "seg_start": {
+        "name": "Segment Start",
+        "color": "rgb(34, 139, 34)",
+        "symbol": "diamond",
+        "size": 8,
+    },
+    "seg_end": {
+        "name": "Segment End",
+        "color": "rgb(255, 140, 0)",
+        "symbol": "square",
+        "size": 8,
+    },
+}
+
+
+def _build_event_list(
+    crossings: List[Dict],
+    selected_by_frame: Dict[int, Tuple[int, Tuple[float, float, float]]],
+    ox: float,
+    oy: float,
+) -> List[Dict]:
+    """
+    Build a flat list of event dicts from net-crossings CSV rows.
+
+    Each event has: etype, frame, dx, dy, dz (display coords), wx, wy, wz, text.
+    """
+    events: List[Dict] = []
+    seen_crossings: set = set()
+    seen_bounces: set = set()
+    seen_seg_starts: set = set()
+    seen_seg_ends: set = set()
+
+    for row in crossings:
+        crossing_frame = row.get("crossing_frame")
+        seg_start = row.get("seg_start_frame")
+        seg_end = row.get("seg_end_frame")
+        bounce_frame = row.get("bounce_frame")
+
+        if isinstance(crossing_frame, int) and crossing_frame not in seen_crossings:
+            seen_crossings.add(crossing_frame)
+            if crossing_frame in selected_by_frame:
+                _, (wx, wy, wz) = selected_by_frame[crossing_frame]
+                events.append(dict(
+                    etype="net_crossing", frame=crossing_frame,
+                    dx=wx - ox, dy=wy - oy, dz=wz, wx=wx, wy=wy, wz=wz,
+                    text=f"Cross",
+                ))
+
+        if isinstance(seg_start, int) and seg_start not in seen_seg_starts:
+            seen_seg_starts.add(seg_start)
+            if seg_start in selected_by_frame:
+                _, (wx, wy, wz) = selected_by_frame[seg_start]
+                events.append(dict(
+                    etype="seg_start", frame=seg_start,
+                    dx=wx - ox, dy=wy - oy, dz=wz, wx=wx, wy=wy, wz=wz,
+                    text=f"Start",
+                ))
+
+        if isinstance(seg_end, int) and seg_end not in seen_seg_ends:
+            seen_seg_ends.add(seg_end)
+            if seg_end in selected_by_frame:
+                _, (wx, wy, wz) = selected_by_frame[seg_end]
+                events.append(dict(
+                    etype="seg_end", frame=seg_end,
+                    dx=wx - ox, dy=wy - oy, dz=wz, wx=wx, wy=wy, wz=wz,
+                    text=f"End",
+                ))
+
+        if isinstance(bounce_frame, int) and bounce_frame not in seen_bounces:
+            seen_bounces.add(bounce_frame)
+            bx = row.get("bounce_x")
+            by = row.get("bounce_y")
+            bz = row.get("bounce_z")
+            if isinstance(bx, (int, float)) and isinstance(by, (int, float)) and isinstance(bz, (int, float)):
+                events.append(dict(
+                    etype="bounce", frame=bounce_frame,
+                    dx=float(bx) - ox, dy=float(by) - oy, dz=float(bz),
+                    wx=float(bx), wy=float(by), wz=float(bz),
+                    text=f"Bounce",
+                ))
+
+    return events
+
+
+def _event_traces_for_frame(
+    all_events: List[Dict],
+    current_frame: int,
+    showlegend: bool,
+    half_window: int = EVENT_VISIBILITY_HALF_WINDOW,
+) -> List:
+    """
+    Return Scatter3d traces for events visible at *current_frame*.
+
+    An event is visible when ``|current_frame - event.frame| <= half_window``.
+    One trace per event type is emitted (always four traces to keep trace count stable).
+    """
+    import plotly.graph_objects as go
+
+    per_type: Dict[str, List[Dict]] = {k: [] for k in _EVENT_STYLES}
+    for ev in all_events:
+        if abs(current_frame - ev["frame"]) <= half_window:
+            per_type[ev["etype"]].append(ev)
+
+    traces: List[go.Scatter3d] = []
+    for etype, style in _EVENT_STYLES.items():
+        hits = per_type[etype]
+        if hits:
+            traces.append(
+                go.Scatter3d(
+                    x=[e["dx"] for e in hits],
+                    y=[e["dy"] for e in hits],
+                    z=[e["dz"] for e in hits],
+                    mode="markers+text",
+                    visible=True,
+                    marker=dict(
+                        size=style["size"],
+                        color=style["color"],
+                        symbol=style["symbol"],
+                        line=dict(
+                            width=style.get("line_width", 1),
+                            color=style.get("line_color", "white"),
+                        ),
+                    ),
+                    text=[e["text"] for e in hits],
+                    textposition="top center",
+                    textfont=dict(size=9, color=style["color"]),
+                    name=style["name"],
+                    showlegend=showlegend,
+                    customdata=np.array([[e["wx"], e["wy"], e["wz"]] for e in hits]),
+                    hovertemplate=(
+                        "%{text}<br>"
+                        "x: %{customdata[0]:.4f} m<br>"
+                        "y: %{customdata[1]:.4f} m<br>"
+                        "z: %{customdata[2]:.4f} m"
+                        "<extra></extra>"
+                    ),
+                )
+            )
+        else:
+            traces.append(
+                go.Scatter3d(
+                    x=[], y=[], z=[],
+                    mode="markers",
+                    visible=False,
+                    marker=dict(size=style["size"], color=style["color"], symbol=style["symbol"]),
+                    name=style["name"],
+                    showlegend=showlegend,
+                    hoverinfo="skip",
+                )
+            )
+    return traces
 
 
 def _load_world_points(world_points_file: Optional[str]) -> Optional[np.ndarray]:
@@ -169,6 +366,8 @@ def create_3d_trajectory_visualization_from_jsonl(
     world_points_file: Optional[str] = None,
     title: str = "3D Selected Point Visualization",
     chunk_size: int = 1000,
+    net_crossings_csv: Optional[str] = None,
+    frame_range: Optional[Tuple[int, int]] = None,
 ) -> None:
     """Generate standalone Plotly HTML from JSONL-selected per-frame points."""
     try:
@@ -181,6 +380,12 @@ def create_3d_trajectory_visualization_from_jsonl(
         raise FileNotFoundError(f"JSONL file not found: {jsonl_path}")
 
     frame_ids, selected_by_frame = _parse_jsonl_selected_points(jsonl_path)
+
+    crossings_data: List[Dict] = []
+    csv_to_load = net_crossings_csv or DEFAULT_NET_CROSSINGS_CSV
+    if csv_to_load and os.path.exists(csv_to_load):
+        crossings_data = _load_net_crossings_csv(csv_to_load)
+        print(f"[create_html_from_jsonl] Loaded {len(crossings_data)} net-crossing rows from {csv_to_load}")
     if not frame_ids:
         raise ValueError("No valid JSON lines with integer frame_id were found.")
 
@@ -196,6 +401,9 @@ def create_3d_trajectory_visualization_from_jsonl(
     # Dense range: include every integer between min and max so frames with no JSONL line
     # (typical when the pipeline skips writing no-detection frames) are still animated empty.
     lo, hi = min(ordered_sparse), max(ordered_sparse)
+    if frame_range is not None:
+        lo = max(lo, frame_range[0])
+        hi = min(hi, frame_range[1])
     ordered_frames = list(range(lo, hi + 1))
 
     world_points = _load_world_points(world_points_file)
@@ -245,6 +453,10 @@ def create_3d_trajectory_visualization_from_jsonl(
         "y": [span_y + pad, -pad],
         "z": [DEFAULT_SCENE_Z_RANGE[0], DEFAULT_SCENE_Z_RANGE[1]],
     }
+
+    all_events = _build_event_list(crossings_data, selected_by_frame, ox, oy) if crossings_data else []
+    if all_events:
+        print(f"[create_html_from_jsonl] Built {len(all_events)} event markers (±{EVENT_VISIBILITY_HALF_WINDOW} frame window)")
 
     def _court_traces(showlegend: bool):
         traces: List["go.Scatter3d"] = []
@@ -429,6 +641,8 @@ def create_3d_trajectory_visualization_from_jsonl(
         # Initial frame
         first_frame = chunk_frames[0]
         init_traces = _court_traces(showlegend=True)
+        if all_events:
+            init_traces.extend(_event_traces_for_frame(all_events, first_frame, showlegend=True))
         first_idx = 0
         trail_start_idx = max(0, first_idx - 9)
         trail_points = []
@@ -473,6 +687,8 @@ def create_3d_trajectory_visualization_from_jsonl(
         frames = []
         for idx, fid in enumerate(chunk_frames):
             frame_traces = _court_traces(showlegend=False)
+            if all_events:
+                frame_traces.extend(_event_traces_for_frame(all_events, fid, showlegend=False))
             trail_start_idx = max(0, idx - 9)
             trail_points = []
             for tfid in chunk_frames[trail_start_idx : idx + 1]:
@@ -676,6 +892,22 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=1000,
         help="Max frames per output HTML chunk (default: 1000). Use <=0 for single file.",
     )
+    p.add_argument(
+        "--net-crossings-csv",
+        default=None,
+        help=(
+            f"Path to net_crossings_summary.csv (default: {DEFAULT_NET_CROSSINGS_CSV}). "
+            "Adds markers for net crossings, bounce points, and segment boundaries."
+        ),
+    )
+    p.add_argument(
+        "--frame-range",
+        nargs=2,
+        type=int,
+        default=None,
+        metavar=("START", "END"),
+        help="Limit output to frames in [START, END] (e.g. --frame-range 0 1500).",
+    )
     return p
 
 
@@ -687,6 +919,8 @@ def main() -> None:
         world_points_file=args.world_points_file,
         title=args.title,
         chunk_size=args.chunk_size,
+        net_crossings_csv=args.net_crossings_csv,
+        frame_range=tuple(args.frame_range) if args.frame_range else None,
     )
 
 

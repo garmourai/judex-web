@@ -2,7 +2,7 @@
 Realtime trajectory filtering utilities.
 """
 
-from typing import List, Tuple, Optional, Dict, Any
+from typing import List, Tuple, Optional, Dict, Any, Set
 
 import numpy as np
 
@@ -89,6 +89,7 @@ def get_best_point_each_frame(
     trajectories: List[Trajectory],
     segment: Tuple[int, int],
     last_frames_to_skip: int = LAST_FRAMES_TO_SKIP,
+    handoff_frames: Optional[Set[int]] = None,
 ) -> Tuple[List[Trajectory], List[Trajectory], List[Dict[str, Any]], List[Dict[str, Any]]]:
     start_frame, end_frame = segment
     per_frame_stats: List[Dict[str, Any]] = []
@@ -101,7 +102,15 @@ def get_best_point_each_frame(
     tail_skip = max(0, int(last_frames_to_skip))
     low = max(0, start_frame - LAST_FRAMES_TO_SKIP)
     high = end_frame - tail_skip
-    frames_to_process = sorted(f for f in frame_to_trajectories.keys() if low <= f <= high)
+
+    def _should_process(f: int) -> bool:
+        if low <= f <= high:
+            return True
+        if tail_skip > 0 and high < f <= end_frame and handoff_frames is not None:
+            return f not in handoff_frames
+        return False
+
+    frames_to_process = sorted(f for f in frame_to_trajectories.keys() if _should_process(f))
     trajectories_to_remove = set()
 
     for frame_num in frames_to_process:

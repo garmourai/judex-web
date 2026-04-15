@@ -11,6 +11,10 @@ cd backend
 npm install
 ```
 
+
+sudo mount /dev/nvme1n1 /mnt/data
+
+
 Generate a sample HLS stream (requires [ffmpeg](https://ffmpeg.org/)):
 
 ```bash

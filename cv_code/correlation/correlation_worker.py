@@ -622,6 +622,14 @@ def correlation_worker(
                     next_track_id += 1
 
                 # Step 3: Filter to keep only one point per frame (select best trajectory)
+                handoff_frames = set()
+                if not inference_done_now and trajectory_context and not trajectory_context.is_empty():
+                    for ts in trajectory_context.active_trajectories.values():
+                        handoff_frames.update(ts.detections.keys())
+                    for qs in trajectory_context.queues:
+                        for _, frame_num in qs.detections:
+                            handoff_frames.add(frame_num)
+
                 (
                     stored_trajectories,
                     removed_trajectories,
@@ -635,6 +643,7 @@ def correlation_worker(
                         if inference_done_now
                         else LAST_FRAMES_TO_SKIP
                     ),
+                    handoff_frames=handoff_frames if not inference_done_now else None,
                 )
 
                 trajectory_jsonl_path = _append_trajectory_selection_jsonl(
