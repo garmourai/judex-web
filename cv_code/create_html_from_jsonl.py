@@ -84,8 +84,9 @@ _EVENT_STYLES = {
     },
     "bounce": {
         "name": "Bounce Point",
-        # Scatter3d symbols are limited; open ring (same symbol), yellow vs filled crimson crossing diamond.
-        "color": "rgb(255, 214, 0)",
+        # Scatter3d symbols are limited; open ring (same symbol), black vs filled crimson crossing diamond.
+        "color": "rgb(0, 0, 0)",
+        "line_color": "rgb(0, 0, 0)",
         "symbol": "circle-open",
         "size": 14,
         "line_width": 2,
