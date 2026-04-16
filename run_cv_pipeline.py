@@ -1,6 +1,46 @@
 #!/usr/bin/env python3
-# Prefer: ./run_cv_pipeline.sh  (conda env myenv — see script) or: conda activate myenv && python run_cv_pipeline.py
+# Uses conda env `myenv` by default (re-execs via conda run). Opt out: JUDEX_ALLOW_NON_MYENV=1
+# Or: ./run_cv_pipeline.sh  |  conda activate myenv && python run_cv_pipeline.py
 import sys
+import os
+import shutil
+
+
+def _ensure_conda_myenv() -> None:
+    """Re-run this script under `conda run -n myenv` when not already in myenv."""
+    if os.environ.get("JUDEX_MYENV_CHILD") == "1":
+        return
+    if os.environ.get("JUDEX_ALLOW_NON_MYENV") == "1":
+        return
+    if os.environ.get("CONDA_DEFAULT_ENV") == "myenv":
+        return
+    conda = shutil.which("conda")
+    if conda is None:
+        print(
+            "[run_cv_pipeline] conda not on PATH; continuing. "
+            "If imports fail, use: ./run_cv_pipeline.sh",
+            flush=True,
+        )
+        return
+    env = os.environ.copy()
+    env["JUDEX_MYENV_CHILD"] = "1"
+    script = os.path.abspath(__file__)
+    argv = [
+        conda,
+        "run",
+        "--no-capture-output",
+        "-n",
+        "myenv",
+        "python",
+        script,
+        *sys.argv[1:],
+    ]
+    print("[run_cv_pipeline] Switching to conda env myenv …", flush=True)
+    os.execvpe(conda, argv, env)
+
+
+_ensure_conda_myenv()
+
 sys.path.insert(0, ".")
 sys.path.insert(0, "cv_code")  # needed to unpickle camera_object.pkl (camera.Camera class)
 
@@ -31,6 +71,24 @@ enable_tracknet_batch_overlay_videos = True
 # — stitched_videos: side-by-side both cameras with correlation labels (under unique_output_dir/stitched_correlation_videos/)
 enable_correlation_trajectory_videos = True
 enable_correlation_stitched_videos = True
+enable_correlation_bounce_videos = True
+
+
+def _reset_output_dir(path: str) -> None:
+    """Start each run from a clean output directory."""
+    if not path:
+        raise ValueError("UNIQUE_OUTPUT_DIR must be set")
+    norm = os.path.abspath(path)
+    if norm in ("/", ""):
+        raise ValueError(f"Refusing to delete unsafe output path: {path!r}")
+    if os.path.exists(norm):
+        print(f"[run_cv_pipeline] Removing existing output dir: {norm}", flush=True)
+        shutil.rmtree(norm)
+    os.makedirs(norm, exist_ok=True)
+    print(f"[run_cv_pipeline] Created fresh output dir: {norm}", flush=True)
+
+
+_reset_output_dir(UNIQUE_OUTPUT_DIR)
 
 config = PipelineConfig(
     camera_1_id="source",
@@ -55,6 +113,11 @@ config = PipelineConfig(
     enable_tracknet_visualization=enable_tracknet_batch_overlay_videos,
     enable_visualization=enable_correlation_trajectory_videos,
     enable_stitched_visualization=enable_correlation_stitched_videos,
+    enable_correlation_bounce_videos=enable_correlation_bounce_videos,
+    correlation_triplet_csv_path=TRIPLET_CSV_PATH,
+    correlation_source_segments_dir="/mnt/data/mar30_test/sync_reports/ts_segments_source/1547/",
+    correlation_sink_segments_dir="/mnt/data/mar30_test/sync_reports/ts_segments_sink/1547/",
+    correlation_bounce_output_dir=f"{UNIQUE_OUTPUT_DIR}/bounce_clips",
 )
 
 profiler = TimeProfiler(filepath=f"{UNIQUE_OUTPUT_DIR}/time_profiling_results.txt")

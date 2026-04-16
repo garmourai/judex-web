@@ -20,6 +20,8 @@ from .trajectory import (
     get_best_point_each_frame,
     LAST_FRAMES_TO_SKIP,
 )
+from .net_crossings import LiveNetCrossingsAccumulator, run_net_crossings_from_accumulator
+from .bounce_videos.live_clips import run_bounce_clips_incremental
 
 
 def _load_tracker_points_costs_by_frame(
@@ -356,6 +358,15 @@ def correlation_worker(
         original_frame_width: Optional[int] = None,
         original_frame_height: Optional[int] = None,
         force_stop_event: Optional[threading.Event] = None,
+        enable_correlation_bounce_videos: bool = False,
+        bounce_triplet_csv_path: str = "",
+        bounce_source_segments_dir: str = "",
+        bounce_sink_segments_dir: str = "",
+        bounce_output_dir: str = "",
+        bounce_frames_before: int = 8,
+        bounce_frames_after: int = 8,
+        bounce_pause_frames: int = 4,
+        bounce_limit: Optional[int] = None,
 ):
     """
     Worker thread that continuously monitors dist_tracker.csv files and performs
@@ -423,7 +434,15 @@ def correlation_worker(
     world_points_file = os.path.join(_repo_root, "tools", "pickleball_calib", "worldpickleball.txt")
     correlation_output_dir = os.path.join(output_dir, "correlation")
     os.makedirs(correlation_output_dir, exist_ok=True)
-    
+    trajectory_selection_jsonl = os.path.join(correlation_output_dir, "trajectory_selection.jsonl")
+    # Reset once per run so this worker always starts from a fresh JSONL file.
+    with open(trajectory_selection_jsonl, "w", encoding="utf-8"):
+        pass
+
+    live_net_acc = LiveNetCrossingsAccumulator()
+    bounce_clip_row_src = 0
+    bounce_clip_row_snk = 0
+
     check_count = 0
     last_progress_time = time.time()
     correlation_batch = 0  # increments each time we successfully process a set of segments
@@ -883,6 +902,46 @@ def correlation_worker(
                 f"{tw}x{th} selection_jsonl={'yes' if trajectory_jsonl_path else 'no'}",
                 flush=True,
             )
+            if trajectory_jsonl_path and frame_decisions:
+                live_net_acc.ingest_frame_decisions(frame_decisions)
+                run_net_crossings_from_accumulator(
+                    live_net_acc,
+                    correlation_output_dir,
+                    trajectory_jsonl_path,
+                )
+                if enable_correlation_bounce_videos:
+                    bounce_csv_path = os.path.join(
+                        correlation_output_dir, "bounce_events.csv"
+                    )
+                    if os.path.exists(bounce_csv_path):
+                        _, bounce_clip_row_src = run_bounce_clips_incremental(
+                            bounce_csv_path=bounce_csv_path,
+                            camera="source",
+                            segments_dir=bounce_source_segments_dir,
+                            output_dir=os.path.join(
+                                bounce_output_dir or output_dir, "source"
+                            ),
+                            triplet_csv_path=bounce_triplet_csv_path,
+                            start_row_index=bounce_clip_row_src,
+                            frames_before=bounce_frames_before,
+                            frames_after=bounce_frames_after,
+                            pause_frames=bounce_pause_frames,
+                            limit=bounce_limit,
+                        )
+                        _, bounce_clip_row_snk = run_bounce_clips_incremental(
+                            bounce_csv_path=bounce_csv_path,
+                            camera="sink",
+                            segments_dir=bounce_sink_segments_dir,
+                            output_dir=os.path.join(
+                                bounce_output_dir or output_dir, "sink"
+                            ),
+                            triplet_csv_path=bounce_triplet_csv_path,
+                            start_row_index=bounce_clip_row_snk,
+                            frames_before=bounce_frames_before,
+                            frames_after=bounce_frames_after,
+                            pause_frames=bounce_pause_frames,
+                            limit=bounce_limit,
+                        )
             # ============ END TRAJECTORY CREATION ============
             
             # Optional: cam1 overlay videos (timed separately)
