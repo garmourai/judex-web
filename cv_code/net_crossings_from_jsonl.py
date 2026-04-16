@@ -55,6 +55,54 @@ def _parse_jsonl(path: str) -> List[DetectionRow]:
     return rows
 
 
+def _load_bboxes_by_frame_from_selection_jsonl(path: str) -> Dict[int, Dict[str, Optional[float]]]:
+    """
+    Read bbox_by_camera from trajectory_selection.jsonl.
+
+    Returns frame_id -> {
+        bbox_source_x/y/w/h, bbox_sink_x/y/w/h
+    } where each value is float or None.
+    """
+    out: Dict[int, Dict[str, Optional[float]]] = {}
+    if not path or not os.path.exists(path):
+        return out
+
+    with open(path, "r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            fid = obj.get("frame_id")
+            sel = obj.get("current_selected_point")
+            if not isinstance(fid, int) or not isinstance(sel, dict):
+                continue
+            bmap = sel.get("bbox_by_camera")
+            if not isinstance(bmap, dict):
+                continue
+
+            def _read(cam: str, key: str) -> Optional[float]:
+                bb = bmap.get(cam)
+                if not isinstance(bb, dict):
+                    return None
+                v = bb.get(key)
+                if v is None:
+                    return None
+                return float(v)
+
+            out[fid] = {
+                "bbox_source_x": _read("source", "x"),
+                "bbox_source_y": _read("source", "y"),
+                "bbox_source_w": _read("source", "w"),
+                "bbox_source_h": _read("source", "h"),
+                "bbox_sink_x": _read("sink", "x"),
+                "bbox_sink_y": _read("sink", "y"),
+                "bbox_sink_w": _read("sink", "w"),
+                "bbox_sink_h": _read("sink", "h"),
+            }
+    return out
+
+
 def _filter_rows(rows: List[DetectionRow], lo: Optional[int], hi: Optional[int]) -> List[DetectionRow]:
     out: List[DetectionRow] = []
     for fid, pt in rows:
@@ -756,6 +804,21 @@ def main() -> None:
         all_bounces.extend(b)
         final_segment_count += sub_count
 
+    # Enrich bounce rows with per-camera bbox coordinates from trajectory_selection.jsonl.
+    bbox_by_frame = _load_bboxes_by_frame_from_selection_jsonl(args.trajectory_jsonl)
+    for b in all_bounces:
+        bf_obj = b.get("bounce_frame", -1)
+        bf = int(bf_obj) if isinstance(bf_obj, int) else -1
+        m = bbox_by_frame.get(bf, {})
+        b["bbox_source_x"] = m.get("bbox_source_x")
+        b["bbox_source_y"] = m.get("bbox_source_y")
+        b["bbox_source_w"] = m.get("bbox_source_w")
+        b["bbox_source_h"] = m.get("bbox_source_h")
+        b["bbox_sink_x"] = m.get("bbox_sink_x")
+        b["bbox_sink_y"] = m.get("bbox_sink_y")
+        b["bbox_sink_w"] = m.get("bbox_sink_w")
+        b["bbox_sink_h"] = m.get("bbox_sink_h")
+
     os.makedirs(args.output_dir, exist_ok=True)
     json_path = os.path.join(args.output_dir, "net_crossings.json")
     csv_path = os.path.join(args.output_dir, "net_crossings.csv")
@@ -829,6 +892,14 @@ def main() -> None:
         "run_start",
         "run_end",
         "run_length",
+        "bbox_source_x",
+        "bbox_source_y",
+        "bbox_source_w",
+        "bbox_source_h",
+        "bbox_sink_x",
+        "bbox_sink_y",
+        "bbox_sink_w",
+        "bbox_sink_h",
     ]
     with open(bounce_csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=bounce_fields)

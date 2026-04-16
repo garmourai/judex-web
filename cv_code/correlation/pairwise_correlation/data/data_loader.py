@@ -259,38 +259,36 @@ class DataLoader:
                 if current_field:
                     fields.append(current_field.strip())
                 
-                if len(fields) == 4:
+                if len(fields) >= 4:
                     try:
                         frame_id = int(fields[0])
                         if frame_range and (frame_id < min_frame or frame_id > max_frame):
                             continue
+
+                        # Preferred/current format: Frame,X,Y,Visibility,(optional extra fields...)
                         x_str = fields[1]
                         y_str = fields[2]
                         vis = int(fields[3])
-                        data.append({
-                            'Frame': frame_id,
-                            'X': x_str,
-                            'Y': y_str,
-                            'Visibility': vis
-                        })
                     except (ValueError, IndexError):
-                        continue
-                elif len(fields) == 5:
-                    try:
-                        frame_id = int(fields[0])
-                        if frame_range and (frame_id < min_frame or frame_id > max_frame):
+                        # Legacy format fallback: Frame,extra,X,Y,Visibility
+                        if len(fields) < 5:
                             continue
-                        x_str = fields[2]
-                        y_str = fields[3]
-                        vis = int(fields[4])
-                        data.append({
-                            'Frame': frame_id,
-                            'X': x_str,
-                            'Y': y_str,
-                            'Visibility': vis
-                        })
-                    except (ValueError, IndexError):
-                        continue
+                        try:
+                            frame_id = int(fields[0])
+                            if frame_range and (frame_id < min_frame or frame_id > max_frame):
+                                continue
+                            x_str = fields[2]
+                            y_str = fields[3]
+                            vis = int(fields[4])
+                        except (ValueError, IndexError):
+                            continue
+
+                    data.append({
+                        'Frame': frame_id,
+                        'X': x_str,
+                        'Y': y_str,
+                        'Visibility': vis
+                    })
         
         # Convert to DataFrame for compatibility with existing code
         if len(data) == 0:

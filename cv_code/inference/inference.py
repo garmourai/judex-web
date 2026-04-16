@@ -168,7 +168,7 @@ class RealtimeInference:
     
     def _init_csv_files(self):
         """Initialize CSV files with headers."""
-        headers = "Frame,X,Y,Visibility\n"
+        headers = "Frame,X,Y,Visibility,BBox_X,BBox_Y,BBox_W,BBox_H\n"
         with open(self.csv_1_path, 'w') as f:
             f.write(headers)
         with open(self.csv_2_path, 'w') as f:
@@ -332,6 +332,10 @@ class RealtimeInference:
             'Y': [],
             'Visibility': [],
             'BatchPosition': [],
+            'BBox_X': [],
+            'BBox_Y': [],
+            'BBox_W': [],
+            'BBox_H': [],
         }
         viz_bboxes_by_frame_pos: Dict[int, List[Tuple[int, int, int, int]]] = {}
 
@@ -451,6 +455,10 @@ class RealtimeInference:
                         ]
                     all_cx = []
                     all_cy = []
+                    all_bx = []
+                    all_by = []
+                    all_bw = []
+                    all_bh = []
                     
                     for bbox in all_bbox_pred:
                         # Match non-realtime: round center first, then scale and round again
@@ -460,6 +468,11 @@ class RealtimeInference:
                         cy_var = int(cy_var * img_scaler[1])
                         all_cx.append(cx_var)
                         all_cy.append(cy_var)
+                        # Persist per-detection bbox in original frame coordinates
+                        all_bx.append(int(float(bbox[0]) * img_scaler[0]))
+                        all_by.append(int(float(bbox[1]) * img_scaler[1]))
+                        all_bw.append(max(0, int(float(bbox[2]) * img_scaler[0])))
+                        all_bh.append(max(0, int(float(bbox[3]) * img_scaler[1])))
                     
                     # Visibility: 1 if any detection found, 0 if all are (0,0)
                     vis_pred = 0
@@ -477,6 +490,10 @@ class RealtimeInference:
                     pred_dict['Y'].append(all_cy)  # List of Y coordinates
                     pred_dict['Visibility'].append(vis_pred)
                     pred_dict['BatchPosition'].append(frame_pos_in_batch)  # Store position for camera mapping
+                    pred_dict['BBox_X'].append(all_bx)
+                    pred_dict['BBox_Y'].append(all_by)
+                    pred_dict['BBox_W'].append(all_bw)
+                    pred_dict['BBox_H'].append(all_bh)
             
             postprocess_duration = time.time() - postprocess_start
             total_postprocess_time += postprocess_duration
@@ -573,7 +590,7 @@ class RealtimeInference:
         Append predictions to CSV file.
         Supports multi-shuttle detection where X and Y are lists.
         
-        CSV format (per row): Frame,X,Y,Visibility
+        CSV format (per row): Frame,X,Y,Visibility,BBox_X,BBox_Y,BBox_W,BBox_H
         """
         with open(csv_path, 'a') as f:
             num_preds = len(predictions.get('Frame', []))
@@ -582,6 +599,10 @@ class RealtimeInference:
                 x = predictions['X'][i]
                 y = predictions['Y'][i]
                 vis = predictions['Visibility'][i]
+                bx = predictions.get('BBox_X', [[]] * num_preds)[i]
+                by = predictions.get('BBox_Y', [[]] * num_preds)[i]
+                bw = predictions.get('BBox_W', [[]] * num_preds)[i]
+                bh = predictions.get('BBox_H', [[]] * num_preds)[i]
                 
                 if isinstance(x, list):
                     x_str = str(x)
@@ -592,8 +613,13 @@ class RealtimeInference:
                     y_str = str(y)
                 else:
                     y_str = str(y)
-                
-                f.write(f"{frame_num},{x_str},{y_str},{vis}\n")
+
+                bx_str = str(bx) if isinstance(bx, list) else str(bx)
+                by_str = str(by) if isinstance(by, list) else str(by)
+                bw_str = str(bw) if isinstance(bw, list) else str(bw)
+                bh_str = str(bh) if isinstance(bh, list) else str(bh)
+
+                f.write(f"{frame_num},{x_str},{y_str},{vis},{bx_str},{by_str},{bw_str},{bh_str}\n")
     
     def process_camera_batch(
         self,
@@ -693,6 +719,10 @@ class RealtimeInference:
                 'X': all_predictions['X'],
                 'Y': all_predictions['Y'],
                 'Visibility': all_predictions['Visibility'],
+                'BBox_X': all_predictions.get('BBox_X', []),
+                'BBox_Y': all_predictions.get('BBox_Y', []),
+                'BBox_W': all_predictions.get('BBox_W', []),
+                'BBox_H': all_predictions.get('BBox_H', []),
             }
             
             # Determine which CSV to write to

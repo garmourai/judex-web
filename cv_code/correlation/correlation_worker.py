@@ -51,6 +51,12 @@ def _load_tracker_points_costs_by_frame(
                 z_values = literal_eval(row["Z"])
             except (ValueError, SyntaxError):
                 continue
+            try:
+                cam1_values = literal_eval(row.get("Point_Coordinates_Camera1", "[]"))
+                cam2_values = literal_eval(row.get("Point_Coordinates_Camera2", "[]"))
+            except (ValueError, SyntaxError):
+                cam1_values = []
+                cam2_values = []
             f1_values = literal_eval(row.get("Point_Costs_Formula1", "[]"))
             f2_values = literal_eval(row.get("Point_Costs_Formula2", "[]"))
             epi_values = literal_eval(row.get("Point_Costs_Epipolar", "[]"))
@@ -74,8 +80,119 @@ def _load_tracker_points_costs_by_frame(
                     costs["reproj"] = float(reproj_values[i])
                 if i < len(temporal_values):
                     costs["temp"] = float(temporal_values[i])
+                if i < len(cam1_values):
+                    c1 = cam1_values[i]
+                    if isinstance(c1, (list, tuple)) and len(c1) >= 2:
+                        costs["cam1_x"] = float(c1[0])
+                        costs["cam1_y"] = float(c1[1])
+                if i < len(cam2_values):
+                    c2 = cam2_values[i]
+                    if isinstance(c2, (list, tuple)) and len(c2) >= 2:
+                        costs["cam2_x"] = float(c2[0])
+                        costs["cam2_y"] = float(c2[1])
                 result.setdefault(of, []).append(((x_3d, y_3d, z_3d), costs))
     return result
+
+
+def _load_bboxes_by_frame_from_dist_tracker(
+    dist_tracker_path: str,
+) -> Dict[int, List[Dict[str, float]]]:
+    """
+    Map frame_id -> list of bbox entries aligned with X/Y detection lists.
+    Expected CSV columns include: Frame,X,Y,Visibility,BBox_X,BBox_Y,BBox_W,BBox_H.
+    """
+    out: Dict[int, List[Dict[str, float]]] = {}
+    if not os.path.exists(dist_tracker_path):
+        return out
+
+    with open(dist_tracker_path, "r", newline="") as f:
+        # Header is expected: Frame,X,Y,Visibility,BBox_X,BBox_Y,BBox_W,BBox_H
+        _ = f.readline()
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line:
+                continue
+
+            # Split CSV row while preserving commas inside list fields like "[1, 2, 3]".
+            fields: List[str] = []
+            cur = ""
+            bracket_depth = 0
+            for ch in line:
+                if ch == "[":
+                    bracket_depth += 1
+                    cur += ch
+                elif ch == "]":
+                    bracket_depth -= 1
+                    cur += ch
+                elif ch == "," and bracket_depth == 0:
+                    fields.append(cur.strip())
+                    cur = ""
+                else:
+                    cur += ch
+            if cur:
+                fields.append(cur.strip())
+
+            if len(fields) < 8:
+                continue
+
+            frame_id = int(fields[0])
+            vis = int(fields[3])
+            if vis != 1:
+                continue
+
+            xs = literal_eval(fields[1])
+            ys = literal_eval(fields[2])
+            bxs = literal_eval(fields[4])
+            bys = literal_eval(fields[5])
+            bws = literal_eval(fields[6])
+            bhs = literal_eval(fields[7])
+
+            if not all(isinstance(v, list) for v in (xs, ys, bxs, bys, bws, bhs)):
+                continue
+            n = min(len(xs), len(ys), len(bxs), len(bys), len(bws), len(bhs))
+            if n <= 0:
+                continue
+
+            entries: List[Dict[str, float]] = []
+            for i in range(n):
+                cx = float(xs[i])
+                cy = float(ys[i])
+                bx = float(bxs[i])
+                by = float(bys[i])
+                bw = float(bws[i])
+                bh = float(bhs[i])
+                if bw <= 0 or bh <= 0:
+                    continue
+                entries.append(
+                    {
+                        "cx": cx,
+                        "cy": cy,
+                        "x": bx,
+                        "y": by,
+                        "w": bw,
+                        "h": bh,
+                    }
+                )
+            if entries:
+                out[frame_id] = entries
+    return out
+
+
+def _nearest_bbox_for_xy(
+    bboxes: List[Dict[str, float]],
+    x: float,
+    y: float,
+) -> Optional[Dict[str, float]]:
+    if not bboxes:
+        return None
+    best: Optional[Dict[str, float]] = None
+    best_d = float("inf")
+    for b in bboxes:
+        d = (float(b["cx"]) - x) ** 2 + (float(b["cy"]) - y) ** 2
+        if d < best_d:
+            best_d = d
+            best = b
+    return best
 
 
 def _nearest_tracker_costs(
@@ -103,6 +220,10 @@ def _append_trajectory_selection_jsonl(
     correlation_output_dir: str,
     segment: Tuple[int, int],
     frame_decisions: List[Dict[str, Any]],
+    camera_1_csv_path: str,
+    camera_2_csv_path: str,
+    camera_1_id: str,
+    camera_2_id: str,
 ) -> Optional[str]:
     """
     Append one JSON object per line to trajectory_selection.jsonl (authoritative post-select_best output).
@@ -115,6 +236,8 @@ def _append_trajectory_selection_jsonl(
         return None
     tracker_path = os.path.join(correlation_output_dir, "tracker.csv")
     costs_by_frame = _load_tracker_points_costs_by_frame(tracker_path)
+    bbox_by_frame_cam1 = _load_bboxes_by_frame_from_dist_tracker(camera_1_csv_path)
+    bbox_by_frame_cam2 = _load_bboxes_by_frame_from_dist_tracker(camera_2_csv_path)
     path = os.path.join(correlation_output_dir, "trajectory_selection.jsonl")
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     with open(path, "a", encoding="utf-8") as f:
@@ -127,6 +250,34 @@ def _append_trajectory_selection_jsonl(
                 gid = int(c["track_id"])
                 xf, yf, zf = float(c["x"]), float(c["y"]), float(c["z"])
                 matched = _nearest_tracker_costs(frame_pts, xf, yf, zf) or {}
+                cam1_bbox = None
+                cam2_bbox = None
+                if "cam1_x" in matched and "cam1_y" in matched:
+                    b1 = _nearest_bbox_for_xy(
+                        bbox_by_frame_cam1.get(frame_num, []),
+                        float(matched["cam1_x"]),
+                        float(matched["cam1_y"]),
+                    )
+                    if b1 is not None:
+                        cam1_bbox = {
+                            "x": float(b1["x"]),
+                            "y": float(b1["y"]),
+                            "w": float(b1["w"]),
+                            "h": float(b1["h"]),
+                        }
+                if "cam2_x" in matched and "cam2_y" in matched:
+                    b2 = _nearest_bbox_for_xy(
+                        bbox_by_frame_cam2.get(frame_num, []),
+                        float(matched["cam2_x"]),
+                        float(matched["cam2_y"]),
+                    )
+                    if b2 is not None:
+                        cam2_bbox = {
+                            "x": float(b2["x"]),
+                            "y": float(b2["y"]),
+                            "w": float(b2["w"]),
+                            "h": float(b2["h"]),
+                        }
                 active.append(
                     {
                         "trajectory_id": gid,
@@ -135,6 +286,10 @@ def _append_trajectory_selection_jsonl(
                         "z": c["z"],
                         "is_selected": c["is_selected"],
                         "costs": matched,
+                        "bbox_by_camera": {
+                            camera_1_id: cam1_bbox,
+                            camera_2_id: cam2_bbox,
+                        },
                     }
                 )
             selected = next((a for a in active if a["is_selected"]), None)
@@ -149,6 +304,7 @@ def _append_trajectory_selection_jsonl(
                         "y": selected["y"],
                         "z": selected["z"],
                         "costs": selected.get("costs", {}),
+                        "bbox_by_camera": selected.get("bbox_by_camera", {}),
                     }
                     if selected
                     else None
@@ -160,6 +316,7 @@ def _append_trajectory_selection_jsonl(
                         "y": x["y"],
                         "z": x["z"],
                         "costs": x.get("costs", {}),
+                        "bbox_by_camera": x.get("bbox_by_camera", {}),
                     }
                     for x in ignored
                 ],
@@ -650,6 +807,10 @@ def correlation_worker(
                     correlation_output_dir,
                     segment,
                     frame_decisions,
+                    camera_1_csv_path=camera_1_csv_path,
+                    camera_2_csv_path=camera_2_csv_path,
+                    camera_1_id=camera_1_id,
+                    camera_2_id=camera_2_id,
                 )
 
                 # Write per-frame filter statistics CSV for this segment
