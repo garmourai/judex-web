@@ -1,1 +1,1 @@
-{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/MultiReplayScreen.tsx","./src/components/ReplayScreen.tsx","./src/components/StreamPlayer.tsx"],"version":"5.6.3"}
+{"root":["./src/App.tsx","./src/main.tsx","./src/vite-env.d.ts","./src/components/BounceClipVideo.tsx","./src/components/MultiReplayScreen.tsx","./src/components/ReplayScreen.tsx","./src/components/StreamPlayer.tsx"],"version":"5.6.3"}

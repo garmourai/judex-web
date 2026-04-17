@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StreamPlayer } from './StreamPlayer';
 import type { StreamPlayerHandle } from './StreamPlayer';
+import { BounceClipVideo } from './BounceClipVideo';
 import './MultiReplayScreen.css';
 
 const SPEEDS = [0.25, 0.5, 1, 1.25, 1.5] as const;
@@ -53,6 +54,22 @@ type BounceEvent = {
   score: number;
 };
 
+type EventMarker = {
+  fraction: number;
+  timeSec: number;
+  frame: number;
+  direction: string;
+  side: string;
+  score: number;
+  label: string;
+};
+
+type EventClipRow = {
+  camera: string;
+  clipName: string;
+  url: string;
+};
+
 type MultiReplayScreenProps = {
   segmentId: string;
   minutes: number;
@@ -82,6 +99,12 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
   const frameRefs = { source: sourceFrameRef, hq: hqFrameRef, sink: sinkFrameRef };
 
   const [events, setEvents] = useState<BounceEvent[]>([]);
+  const [selectedEventClips, setSelectedEventClips] = useState<{
+    marker: EventMarker;
+    clips: EventClipRow[];
+    loading: boolean;
+    error: string | null;
+  } | null>(null);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -169,7 +192,7 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
       .map((ev) => {
         const timeSec = frameToSyncTime(ev.frame);
         if (timeSec == null) return null;
-        return {
+        const marker: EventMarker = {
           fraction: timeSec / syncDur,
           timeSec,
           frame: ev.frame,
@@ -178,12 +201,13 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
           score: ev.score,
           label: ev.direction === 'left_to_right' ? 'L→R' : 'R→L',
         };
+        return marker;
       })
-      .filter((m): m is NonNullable<typeof m> => m !== null);
+      .filter((m): m is EventMarker => m !== null);
   }, [events, meta]);
 
   const eventsTimeline = useMemo(
-    () => [...eventMarkers].sort((a, b) => a.timeSec - b.timeSec),
+    (): EventMarker[] => [...eventMarkers].sort((a, b) => a.timeSec - b.timeSec),
     [eventMarkers],
   );
 
@@ -361,6 +385,28 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     [sourceStartOffset, seekFollowersToSourceTime, duration, meta?.syncDurationSec],
   );
 
+  const openEventClips = useCallback(
+    async (ev: EventMarker) => {
+      seekToSyncTime(ev.timeSec);
+      setSelectedEventClips({ marker: ev, clips: [], loading: true, error: null });
+      try {
+        const r = await fetch(`/api/event-clips/${ev.frame}`);
+        const data = (await r.json()) as { clips?: EventClipRow[]; error?: string };
+        if (!r.ok) throw new Error(data?.error ?? 'Failed to load clip list');
+        const clips = Array.isArray(data?.clips) ? data.clips : [];
+        setSelectedEventClips({ marker: ev, clips, loading: false, error: null });
+      } catch (e) {
+        setSelectedEventClips({
+          marker: ev,
+          clips: [],
+          loading: false,
+          error: e instanceof Error ? e.message : 'Failed to load clip list',
+        });
+      }
+    },
+    [seekToSyncTime],
+  );
+
   const jumpToPrevEvent = useCallback(() => {
     const leader = sourceRef.current?.getVideo();
     if (!leader || !eventsTimeline.length) return;
@@ -368,11 +414,11 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     for (let i = eventsTimeline.length - 1; i >= 0; i--) {
       const ev = eventsTimeline[i];
       if (ev.timeSec < t - 0.02) {
-        seekToSyncTime(ev.timeSec);
+        void openEventClips(ev);
         return;
       }
     }
-  }, [eventsTimeline, seekToSyncTime, sourceStartOffset]);
+  }, [eventsTimeline, openEventClips, sourceStartOffset]);
 
   const jumpToNextEvent = useCallback(() => {
     const leader = sourceRef.current?.getVideo();
@@ -380,11 +426,11 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     const t = Math.max(0, leader.currentTime - sourceStartOffset);
     for (const ev of eventsTimeline) {
       if (ev.timeSec > t + 0.02) {
-        seekToSyncTime(ev.timeSec);
+        void openEventClips(ev);
         return;
       }
     }
-  }, [eventsTimeline, seekToSyncTime, sourceStartOffset]);
+  }, [eventsTimeline, openEventClips, sourceStartOffset]);
 
   const skip = useCallback(
     (delta: number) => {
@@ -596,9 +642,9 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
                   type="button"
                   className={`event-marker${ev.side === 'source_side' ? ' event-marker--source' : ' event-marker--sink'}`}
                   style={{ left: `${ev.fraction * 100}%` }}
-                  onClick={() => seekToSyncTime(ev.timeSec)}
-                  title={`${ev.label} · F${ev.frame} · ${formatTime(ev.timeSec)} · Score ${ev.score.toFixed(2)}`}
-                  aria-label={`Event at ${formatTime(ev.timeSec)}`}
+                  onClick={() => void openEventClips(ev)}
+                  title={`${ev.label} · F${ev.frame} · ${formatTime(ev.timeSec)} · Score ${ev.score.toFixed(2)} — show clip`}
+                  aria-label={`Event at ${formatTime(ev.timeSec)}, show bounce clip`}
                 />
               ))}
             </div>
@@ -697,6 +743,54 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
             </div>
           </div>
         </div>
+
+        {selectedEventClips && (
+          <div className="event-clip-panel" role="region" aria-label="Bounce event clip">
+            <div className="event-clip-panel-header">
+              <h2 className="event-clip-panel-title">
+                Event clip · Frame {selectedEventClips.marker.frame} · {selectedEventClips.marker.label}{' '}
+                · {selectedEventClips.marker.side.replace(/_/g, ' ')}
+              </h2>
+              <button
+                type="button"
+                className="replay-ctrl-btn event-clip-panel-close"
+                onClick={() => setSelectedEventClips(null)}
+                aria-label="Close event clip panel"
+              >
+                Close
+              </button>
+            </div>
+            {selectedEventClips.loading && (
+              <p className="event-clip-panel-status">Loading clip list…</p>
+            )}
+            {selectedEventClips.error && (
+              <p className="event-clip-panel-error">{selectedEventClips.error}</p>
+            )}
+            {!selectedEventClips.loading && !selectedEventClips.error && selectedEventClips.clips.length === 0 && (
+              <p className="event-clip-panel-status">
+                No clip files listed for this frame (see events/bounce_events_clips.csv and events/bounce_clips/).
+              </p>
+            )}
+            {selectedEventClips.clips.length > 0 && (
+              <>
+                <p className="event-clip-hint">
+                  Clips are loaded fully then played (avoids Range/proxy glitches). They must be{' '}
+                  <strong>H.264</strong> in MP4 for Chrome; old <code>mp4v</code> (MPEG-4 Part 2) files will not play.
+                </p>
+                <div className="event-clip-grid">
+                  {selectedEventClips.clips.map((c) => (
+                    <div key={`${c.camera}-${c.clipName}`} className="event-clip-cell">
+                      <div className="event-clip-label">
+                        {CAMERA_LABELS[c.camera as CameraKey] ?? c.camera}
+                      </div>
+                      <BounceClipVideo url={c.url} label={`${c.camera} ${c.clipName}`} />
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

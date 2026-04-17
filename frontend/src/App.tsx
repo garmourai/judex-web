@@ -231,7 +231,7 @@ export default function App() {
     const segId = multiSegmentId.trim() || sessionStatus.trackId;
     if (!segId) return;
     const parsed = Number(snapshotMinutes);
-    const mins = Number.isFinite(parsed) && parsed > 0 ? parsed : 5;
+    const mins = Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
     const url = `/multi-replay/${segId}?minutes=${mins}`;
     window.history.pushState({}, '', url);
     setPathname(getPathname());

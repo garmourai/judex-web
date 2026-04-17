@@ -230,6 +230,96 @@
   border-radius: 0;
 }
 
+/* ─── Bounce event clip panel (below replay) ─────────────── */
+.event-clip-panel {
+  border-top: 1px solid #27272a;
+  padding: 0.85rem 1rem 1.1rem;
+  background: #0c0c0e;
+}
+
+.event-clip-panel-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.65rem;
+}
+
+.event-clip-panel-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: #e4e4e7;
+  line-height: 1.35;
+}
+
+.event-clip-panel-close {
+  flex-shrink: 0;
+}
+
+.event-clip-panel-status,
+.event-clip-panel-error {
+  margin: 0.35rem 0 0;
+  font-size: 0.85rem;
+  color: #a1a1aa;
+}
+
+.event-clip-panel-error {
+  color: #f87171;
+}
+
+.event-clip-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+
+.event-clip-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.event-clip-label {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #a78bfa;
+}
+
+.event-clip-video {
+  width: 100%;
+  max-height: 280px;
+  border-radius: 6px;
+  background: #000;
+  border: 1px solid #27272a;
+}
+
+.event-clip-hint {
+  margin: 0 0 0.65rem;
+  font-size: 0.8rem;
+  color: #a1a1aa;
+  line-height: 1.45;
+}
+
+.event-clip-video-error {
+  margin: 0.35rem 0 0;
+  font-size: 0.8rem;
+  color: #f87171;
+  line-height: 1.4;
+}
+
+.event-clip-open-link {
+  color: #93c5fd;
+  text-decoration: underline;
+}
+
+.event-clip-open-link:hover {
+  color: #bfdbfe;
+}
+
 /* ─── Responsive: stack sidebar below on small screens ───── */
 @media (max-width: 640px) {
   .multi-replay-layout {

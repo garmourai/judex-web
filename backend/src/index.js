@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createReadStream } from 'fs';
 import { promises as fs } from 'fs';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
@@ -26,6 +27,7 @@ const TRACK_INDEX_PATH = path.join(SOURCE_CODE_DIR, 'variable_files', 'track_vid
 
 const SYNC_REPORTS_DIR = path.resolve(__dirname, '..', '..', 'sync_reports');
 const WATCHER_SCRIPT = path.resolve(__dirname, '..', '..', 'hls_segment_watcher.py');
+const EVENTS_ROOT = path.resolve(__dirname, '..', '..', 'events');
 
 const CAMERA_DIRS = {
   source: TS_SEGMENTS_DIR,
@@ -505,6 +507,48 @@ app.get('/api/events/:segmentId', async (req, res) => {
   }
 });
 
+// Bounce event clip files (camera + clip_name) for a given bounce_frame — from bounce_events_clips.csv
+app.get('/api/event-clips/:bounceFrame', async (req, res) => {
+  try {
+    const bounceFrame = Number(req.params.bounceFrame);
+    if (!Number.isFinite(bounceFrame)) {
+      return res.status(400).json({ error: 'Invalid bounce_frame' });
+    }
+    const clipsPath = path.join(EVENTS_ROOT, 'bounce_events_clips.csv');
+    const content = await fs.readFile(clipsPath, 'utf8');
+    const lines = content.split(/\r?\n/).filter((l) => l.trim());
+    if (lines.length < 2) return res.json({ bounceFrame, clips: [] });
+
+    const header = lines[0].split(',').map((h) => h.trim());
+    const camIdx = header.indexOf('camera');
+    const frameIdx = header.indexOf('bounce_frame');
+    const nameIdx = header.indexOf('clip_name');
+    const statusIdx = header.indexOf('status');
+    if (camIdx < 0 || frameIdx < 0 || nameIdx < 0) {
+      return res.status(500).json({ error: 'bounce_events_clips.csv missing required columns' });
+    }
+
+    const clips = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = lines[i].split(',');
+      if (cols.length <= Math.max(camIdx, frameIdx, nameIdx)) continue;
+      const rowFrame = Number(cols[frameIdx]);
+      if (rowFrame !== bounceFrame) continue;
+      if (statusIdx >= 0 && (cols[statusIdx] || '').trim().toLowerCase() !== 'ok') continue;
+      const camera = (cols[camIdx] || '').trim();
+      const clipName = (cols[nameIdx] || '').trim();
+      if (!camera || !clipName) continue;
+      const url = `/events/bounce_clips/${encodeURIComponent(camera)}/${encodeURIComponent(clipName)}`;
+      clips.push({ camera, clipName, url });
+    }
+
+    return res.json({ bounceFrame, clips });
+  } catch (err) {
+    if (err?.code === 'ENOENT') return res.json({ bounceFrame: Number(req.params.bounceFrame), clips: [] });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // Multi-camera replay metadata
 app.get('/api/replay/multi/:segmentId', async (req, res) => {
   try {
@@ -797,11 +841,119 @@ app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', service: 'judex-stream-backend' });
 });
 
+function isSafeBounceClipCamera(s) {
+  return typeof s === 'string' && /^[a-z0-9_-]+$/i.test(s);
+}
+function isSafeBounceClipFilename(s) {
+  return typeof s === 'string' && /^[a-z0-9._-]+\.mp4$/i.test(s);
+}
+
+// Explicit Range support for MP4 clips (browsers use 206 Partial Content; headers must be exact).
+// Registered before generic /events static so <video src> always gets bytes, never SPA index.html.
+app.get('/events/bounce_clips/:camera/:filename', async (req, res) => {
+  const { camera, filename } = req.params;
+  if (!isSafeBounceClipCamera(camera) || !isSafeBounceClipFilename(filename)) {
+    return res.status(400).send('Invalid path');
+  }
+  const filePath = path.join(EVENTS_ROOT, 'bounce_clips', camera, filename);
+  let st;
+  try {
+    st = await fs.stat(filePath);
+  } catch {
+    return res.status(404).send('Not found');
+  }
+  if (!st.isFile()) return res.status(404).send('Not found');
+
+  const fileSize = st.size;
+  res.setHeader('Accept-Ranges', 'bytes');
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+
+  const range = req.headers.range;
+  if (range) {
+    const raw = String(range).trim();
+    // "bytes=-500" = last 500 bytes (some players fetch tail for moov)
+    const suffix = /^bytes=-(\d+)$/i.exec(raw);
+    let start;
+    let end;
+    if (suffix) {
+      const n = parseInt(suffix[1], 10);
+      if (!Number.isFinite(n) || n <= 0 || n > fileSize) {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+      start = fileSize - n;
+      end = fileSize - 1;
+    } else {
+      const m = /^bytes=(\d*)-(\d*)$/i.exec(raw);
+      if (!m) {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+      start = m[1] === '' ? 0 : parseInt(m[1], 10);
+      end = m[2] === '' ? fileSize - 1 : parseInt(m[2], 10);
+      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= fileSize) {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+      if (end >= fileSize) end = fileSize - 1;
+      if (start > end) {
+        res.status(416);
+        res.setHeader('Content-Range', `bytes */${fileSize}`);
+        return res.end();
+      }
+    }
+
+    const chunkSize = end - start + 1;
+    const isEntireFile = start === 0 && end === fileSize - 1;
+    // Many browsers play small / full-range MP4 more reliably as 200 without Content-Range (RFC 7233).
+    if (isEntireFile) {
+      res.status(200);
+      res.setHeader('Content-Length', String(fileSize));
+      const stream = createReadStream(filePath);
+      stream.on('error', () => {
+        if (!res.headersSent) res.status(500).end();
+        else res.destroy();
+      });
+      return stream.pipe(res);
+    }
+
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
+    res.setHeader('Content-Length', String(chunkSize));
+    const stream = createReadStream(filePath, { start, end });
+    stream.on('error', () => {
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy();
+    });
+    return stream.pipe(res);
+  }
+
+  res.status(200);
+  res.setHeader('Content-Length', String(fileSize));
+  const stream = createReadStream(filePath);
+  stream.on('error', () => {
+    if (!res.headersSent) res.status(500).end();
+    else res.destroy();
+  });
+  return stream.pipe(res);
+});
+
+// Other files under events/ (if any)
+app.use('/events', express.static(EVENTS_ROOT));
+
 // Serve frontend build
 const frontendDist = path.join(__dirname, '..', '..', 'frontend', 'dist');
 app.use(express.static(frontendDist));
-app.get('*', (_req, res) => {
-  res.sendFile(path.join(frontendDist, 'index.html'));
+app.get('*', (req, res) => {
+  // Do not serve SPA shell for media paths (breaks <video> / HLS if a file is missing).
+  if (/\.(mp4|m3u8|ts|webm|vtt)$/i.test(req.path)) {
+    return res.status(404).type('text/plain').send('Not found');
+  }
+  return res.sendFile(path.join(frontendDist, 'index.html'));
 });
 
 app.listen(PORT, () => {
