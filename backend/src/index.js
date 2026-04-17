@@ -79,6 +79,15 @@ function stopWatcher() {
 app.use(cors());
 app.use(express.json());
 
+// Express adds weak ETags to JSON by default; clients revalidate with If-None-Match → 304 with an
+// empty body, which breaks fetch().json() and shows stale data. API routes must not be cached here.
+app.use('/api', (_req, res, next) => {
+  res.set('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.set('Pragma', 'no-cache');
+  res.set('etag', false);
+  next();
+});
+
 function parseMediaPlaylist(playlistContent) {
   const lines = playlistContent.split(/\r?\n/);
   const segments = [];
@@ -459,6 +468,39 @@ app.get('/cam/:camera/:segmentId/replay.m3u8', async (req, res) => {
     return res.send(playlist);
   } catch (err) {
     if (err?.code === 'ENOENT') return res.status(404).json({ error: 'Segment directory not found' });
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Bounce events for a segment
+app.get('/api/events/:segmentId', async (req, res) => {
+  try {
+    const eventsPath = path.join(__dirname, '..', '..', 'events', 'bounce_events.csv');
+    const content = await fs.readFile(eventsPath, 'utf8');
+    const lines = content.split(/\r?\n/);
+    if (lines.length < 2) return res.json([]);
+
+    const header = lines[0].split(',');
+    const bounceFrameIdx = header.indexOf('bounce_frame');
+    const dirIdx = header.indexOf('crossing_direction');
+    const sideIdx = header.indexOf('side');
+    const scoreIdx = header.indexOf('score');
+
+    const events = [];
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i].trim();
+      if (!line) continue;
+      const cols = line.split(',');
+      events.push({
+        frame: Number(cols[bounceFrameIdx]) || 0,
+        direction: cols[dirIdx] || '',
+        side: cols[sideIdx] || '',
+        score: Number(cols[scoreIdx]) || 0,
+      });
+    }
+    return res.json(events);
+  } catch (err) {
+    if (err?.code === 'ENOENT') return res.json([]);
     return res.status(500).json({ error: err.message });
   }
 });

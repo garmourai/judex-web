@@ -136,6 +136,60 @@
   font-size: 0.85rem;
 }
 
+/* ─── Seek track with event markers ──────────────────────── */
+.replay-seek-track {
+  position: relative;
+  width: 100%;
+  isolation: isolate;
+}
+
+.replay-seek-track .replay-seeker {
+  position: relative;
+  z-index: 2;
+}
+
+.event-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 8px;
+  height: 20px;
+  border-radius: 2px;
+  border: none;
+  cursor: pointer;
+  z-index: 4;
+  padding: 0;
+  opacity: 0.85;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.event-marker:hover {
+  opacity: 1;
+  transform: translate(-50%, -50%) scaleY(1.4);
+  z-index: 5;
+}
+
+.event-marker--source {
+  background: #f59e0b;
+}
+
+.event-marker--sink {
+  background: #10b981;
+}
+
+.replay-event-nav-sep {
+  width: 1px;
+  height: 1.25rem;
+  background: #3f3f46;
+  margin: 0 0.15rem;
+  flex-shrink: 0;
+}
+
+.replay-event-nav-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
 /* ─── Controls overlay ───────────────────────────────────── */
 .multi-replay-controls-overlay {
   background: #111113;

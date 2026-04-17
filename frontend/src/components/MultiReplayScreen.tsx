@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StreamPlayer } from './StreamPlayer';
 import type { StreamPlayerHandle } from './StreamPlayer';
 import './MultiReplayScreen.css';
@@ -46,6 +46,13 @@ type MultiReplayMeta = {
   syncMap?: SyncMap;
 };
 
+type BounceEvent = {
+  frame: number;
+  direction: string;
+  side: string;
+  score: number;
+};
+
 type MultiReplayScreenProps = {
   segmentId: string;
   minutes: number;
@@ -74,6 +81,7 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
   const sinkFrameRef = useRef<HTMLSpanElement>(null);
   const frameRefs = { source: sourceFrameRef, hq: hqFrameRef, sink: sinkFrameRef };
 
+  const [events, setEvents] = useState<BounceEvent[]>([]);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -106,6 +114,14 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     return () => { cancelled = true; };
   }, [segmentId, minutes]);
 
+  // Fetch bounce events
+  useEffect(() => {
+    fetch(`/api/events/${segmentId}`)
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setEvents(data); })
+      .catch(() => {});
+  }, [segmentId]);
+
   // Set a stable duration from the API response instead of reading
   // the video element's duration (which fluctuates as hls.js loads segments).
   useEffect(() => {
@@ -117,6 +133,67 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
       if (totalDur > 0) setDuration(totalDur);
     }
   }, [meta]);
+
+  // Map bounce_frame (global source frame index, same space as sync CSV Source_Index) onto the
+  // current replay window [startFrame..endFrame]. Prefer syncMap lookup so markers match playback.
+  const eventMarkers = useMemo(() => {
+    if (!events.length || !meta?.frameInfo?.source || !meta.syncDurationSec) return [];
+    const { startFrame, endFrame } = meta.frameInfo.source;
+    const syncDur = meta.syncDurationSec;
+    const sm = meta.syncMap?.source;
+
+    const frameToSyncTime = (bounceFrame: number): number | null => {
+      if (sm?.length) {
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+        for (let i = 0; i < sm.length; i++) {
+          const d = Math.abs(sm[i] - bounceFrame);
+          if (d < bestDiff) {
+            bestDiff = d;
+            bestIdx = i;
+          }
+        }
+        if (bestDiff > 90) return null;
+        const matched = sm[bestIdx];
+        if (matched < startFrame - 60 || matched > endFrame + 60) return null;
+        const t = (matched - startFrame) / FPS;
+        if (t < 0 || t > syncDur) return null;
+        return t;
+      }
+      const t = (bounceFrame - startFrame) / FPS;
+      if (t < 0 || t > syncDur) return null;
+      return t;
+    };
+
+    return events
+      .map((ev) => {
+        const timeSec = frameToSyncTime(ev.frame);
+        if (timeSec == null) return null;
+        return {
+          fraction: timeSec / syncDur,
+          timeSec,
+          frame: ev.frame,
+          direction: ev.direction,
+          side: ev.side,
+          score: ev.score,
+          label: ev.direction === 'left_to_right' ? 'L→R' : 'R→L',
+        };
+      })
+      .filter((m): m is NonNullable<typeof m> => m !== null);
+  }, [events, meta]);
+
+  const eventsTimeline = useMemo(
+    () => [...eventMarkers].sort((a, b) => a.timeSec - b.timeSec),
+    [eventMarkers],
+  );
+
+  const { canPrevEvent, canNextEvent } = useMemo(() => {
+    if (!eventsTimeline.length) return { canPrevEvent: false, canNextEvent: false };
+    const t = currentTime;
+    const prevOk = eventsTimeline.some((ev) => ev.timeSec < t - 0.02);
+    const nextOk = eventsTimeline.some((ev) => ev.timeSec > t + 0.02);
+    return { canPrevEvent: prevOk, canNextEvent: nextOk };
+  }, [eventsTimeline, currentTime]);
 
   const getAllVideos = useCallback((): HTMLVideoElement[] => {
     return CAMERAS
@@ -270,6 +347,45 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     [meta, sourceTimeToMapIdx, frameToPlaylistTime],
   );
 
+  const seekToSyncTime = useCallback(
+    (syncT: number) => {
+      const maxSync = meta?.syncDurationSec ?? duration;
+      const clamped = maxSync > 0 ? Math.max(0, Math.min(syncT, maxSync)) : Math.max(0, syncT);
+      const sourceTime = clamped + sourceStartOffset;
+      const leader = sourceRef.current?.getVideo();
+      if (leader) leader.currentTime = sourceTime;
+      seekFollowersToSourceTime(sourceTime);
+      setCurrentTime(clamped);
+      seekValueRef.current = clamped;
+    },
+    [sourceStartOffset, seekFollowersToSourceTime, duration, meta?.syncDurationSec],
+  );
+
+  const jumpToPrevEvent = useCallback(() => {
+    const leader = sourceRef.current?.getVideo();
+    if (!leader || !eventsTimeline.length) return;
+    const t = Math.max(0, leader.currentTime - sourceStartOffset);
+    for (let i = eventsTimeline.length - 1; i >= 0; i--) {
+      const ev = eventsTimeline[i];
+      if (ev.timeSec < t - 0.02) {
+        seekToSyncTime(ev.timeSec);
+        return;
+      }
+    }
+  }, [eventsTimeline, seekToSyncTime, sourceStartOffset]);
+
+  const jumpToNextEvent = useCallback(() => {
+    const leader = sourceRef.current?.getVideo();
+    if (!leader || !eventsTimeline.length) return;
+    const t = Math.max(0, leader.currentTime - sourceStartOffset);
+    for (const ev of eventsTimeline) {
+      if (ev.timeSec > t + 0.02) {
+        seekToSyncTime(ev.timeSec);
+        return;
+      }
+    }
+  }, [eventsTimeline, seekToSyncTime, sourceStartOffset]);
+
   const skip = useCallback(
     (delta: number) => {
       const leader = sourceRef.current?.getVideo();
@@ -346,7 +462,7 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     };
 
     const timerId = setTimeout(applyInitialSeek, 500);
-    return () => clearTimeout(timerId);
+    return () => { clearTimeout(timerId); };
   }, [meta, loading]);
 
   const seekFraction = duration > 0 ? currentTime / duration : 0;
@@ -458,21 +574,34 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
 
         <div className="multi-replay-controls-overlay">
           <div className="replay-seek-bar">
-            <input
-              type="range"
-              className="replay-seeker"
-              min={0}
-              max={duration || 0}
-              step={0.1}
-              value={currentTime}
-              onMouseDown={onSeekStart}
-              onTouchStart={onSeekStart}
-              onChange={onSeekInput}
-              onMouseUp={onSeekCommit}
-              onTouchEnd={onSeekCommit}
-              style={{ '--seek-fraction': seekFraction } as React.CSSProperties}
-              aria-label="Seek"
-            />
+            <div className="replay-seek-track">
+              <input
+                type="range"
+                className="replay-seeker"
+                min={0}
+                max={duration || 0}
+                step={0.1}
+                value={currentTime}
+                onMouseDown={onSeekStart}
+                onTouchStart={onSeekStart}
+                onChange={onSeekInput}
+                onMouseUp={onSeekCommit}
+                onTouchEnd={onSeekCommit}
+                style={{ '--seek-fraction': seekFraction } as React.CSSProperties}
+                aria-label="Seek"
+              />
+              {eventMarkers.map((ev, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className={`event-marker${ev.side === 'source_side' ? ' event-marker--source' : ' event-marker--sink'}`}
+                  style={{ left: `${ev.fraction * 100}%` }}
+                  onClick={() => seekToSyncTime(ev.timeSec)}
+                  title={`${ev.label} · F${ev.frame} · ${formatTime(ev.timeSec)} · Score ${ev.score.toFixed(2)}`}
+                  aria-label={`Event at ${formatTime(ev.timeSec)}`}
+                />
+              ))}
+            </div>
           </div>
 
           <div className="replay-controls">
@@ -500,6 +629,29 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
                 aria-label={`Forward ${SKIP_SECONDS}s`}
               >
                 {SKIP_SECONDS}s ⏩
+              </button>
+
+              <span className="replay-event-nav-sep" aria-hidden="true" />
+
+              <button
+                type="button"
+                className="replay-ctrl-btn replay-event-nav-btn"
+                onClick={jumpToPrevEvent}
+                disabled={!canPrevEvent}
+                title="Jump to previous bounce event"
+                aria-label="Previous bounce event"
+              >
+                ◀ Event
+              </button>
+              <button
+                type="button"
+                className="replay-ctrl-btn replay-event-nav-btn"
+                onClick={jumpToNextEvent}
+                disabled={!canNextEvent}
+                title="Jump to next bounce event"
+                aria-label="Next bounce event"
+              >
+                Event ▶
               </button>
 
               <div className="replay-speed-wrapper" ref={speedMenuRef}>
