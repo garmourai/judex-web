@@ -214,8 +214,8 @@ def _make_clip(
 ) -> bool:
     """
     One crop rect from bounce_frame anchor; same rect applied to every frame.
-    On the landing frame (bounce_frame), draw a bbox around the bounce center, then
-    duplicate that frame `pause_frames` times for a hold.
+    On the landing frame (bounce_frame), duplicate that patch `pause_frames` times for a hold
+    (bbox overlay / bbox PNG export disabled).
     output_fps = source_fps * playback_speed (e.g. 0.5 = half-speed playback).
     """
     assert len(source_frame_ids) == len(read_indices)
@@ -260,16 +260,12 @@ def _make_clip(
 
     for i, p in enumerate(patches):
         if i == landing_idx and landing_idx >= 0:
-            p_marked = _draw_landing_bbox_from_xywh(
-                p,
-                rect,
-                landing_bbox,
-            )
-            bbox_crop = _crop_landing_bbox_region(p, rect, landing_bbox)
-            if bbox_crop is not None:
-                cv2.imwrite(landing_bbox_image_path, bbox_crop)
+            # p_marked = _draw_landing_bbox_from_xywh(p, rect, landing_bbox)
+            # bbox_crop = _crop_landing_bbox_region(p, rect, landing_bbox)
+            # if bbox_crop is not None:
+            #     cv2.imwrite(landing_bbox_image_path, bbox_crop)
             for _ in range(n_hold):
-                writer.write(p_marked)
+                writer.write(p)
         else:
             writer.write(p)
 
@@ -314,7 +310,7 @@ def main() -> None:
         default=0.5,
         help="multiply source FPS for output (default 0.5 = half-speed playback)",
     )
-    p.add_argument("--frames-before", type=int, default=4, help="frames before bounce_frame (default 4)")
+    p.add_argument("--frames-before", type=int, default=5, help="frames before bounce_frame (default 5)")
     p.add_argument("--frames-after", type=int, default=5, help="frames after bounce_frame (default 5)")
     p.add_argument(
         "--pause-frames",

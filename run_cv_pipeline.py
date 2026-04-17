@@ -118,6 +118,8 @@ config = PipelineConfig(
     correlation_source_segments_dir="/mnt/data/mar30_test/sync_reports/ts_segments_source/1547/",
     correlation_sink_segments_dir="/mnt/data/mar30_test/sync_reports/ts_segments_sink/1547/",
     correlation_bounce_output_dir=f"{UNIQUE_OUTPUT_DIR}/bounce_clips",
+    correlation_bounce_frames_before=5,
+    correlation_bounce_frames_after=5,
 )
 
 profiler = TimeProfiler(filepath=f"{UNIQUE_OUTPUT_DIR}/time_profiling_results.txt")

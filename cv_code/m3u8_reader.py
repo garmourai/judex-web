@@ -8,6 +8,7 @@ segment's entry appears, then uses OpenCV's CAP_PROP_FRAME_COUNT from the
 .ts file as the authoritative frame count.
 """
 
+import importlib.util
 import os
 import threading
 import time
@@ -15,6 +16,19 @@ from typing import Dict, List, Optional
 
 import cv2
 import numpy as np
+
+
+_here = os.path.dirname(os.path.abspath(__file__))
+_spec_hls = importlib.util.spec_from_file_location(
+    "hls_segment_manifest",
+    os.path.join(_here, "hls_segment_manifest.py"),
+)
+if _spec_hls is None or _spec_hls.loader is None:
+    raise ImportError("cannot load hls_segment_manifest.py next to m3u8_reader")
+_hls_manifest = importlib.util.module_from_spec(_spec_hls)
+_spec_hls.loader.exec_module(_hls_manifest)
+append_segment_manifest_row = _hls_manifest.append_segment_manifest_row
+load_segment_manifest = _hls_manifest.load_segment_manifest
 
 
 class M3U8SegmentReader:
@@ -275,6 +289,9 @@ class M3U8SegmentReader:
                 offset = 0
             self._cumulative_offsets.append(offset)
             self._frame_counts.append(frame_count)
+            append_segment_manifest_row(
+                self._segments_dir, next_idx, offset, frame_count
+            )
             print(f"[M3U8SegmentReader] seg {next_idx}: {frame_count} frames "
                   f"(cumulative offset {offset})")
         return True

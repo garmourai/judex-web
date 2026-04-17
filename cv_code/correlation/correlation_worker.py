@@ -363,8 +363,8 @@ def correlation_worker(
         bounce_source_segments_dir: str = "",
         bounce_sink_segments_dir: str = "",
         bounce_output_dir: str = "",
-        bounce_frames_before: int = 8,
-        bounce_frames_after: int = 8,
+        bounce_frames_before: int = 5,
+        bounce_frames_after: int = 5,
         bounce_pause_frames: int = 4,
         bounce_limit: Optional[int] = None,
 ):
@@ -569,7 +569,10 @@ def correlation_worker(
         #   correlation_segment_trajectory_s   — create/merge/filter + mapping CSV
         #   correlation_segment_viz_overlay_s — cam1 overlay MP4 chunks (if enabled)
         #   correlation_segment_viz_stitched_s — side-by-side stitched MP4 (if enabled)
-        #   correlation_segment_accounted_s    — sum of the four above
+        #   correlation_net_crossings_live_s     — in-memory net crossings + CSV/JSON write
+        #   correlation_bounce_clips_source_s    — bounce MP4s (source camera, incremental)
+        #   correlation_bounce_clips_sink_s      — bounce MP4s (sink camera, incremental)
+        #   correlation_segment_accounted_s    — sum of pairwise, trajectory, viz, net_crossings, bounce
         #   correlation_segment_overhead_s     — wall − accounted (cleanup, I/O, etc.)
         #   correlation_complete_segment_time  — wall time for full batch
         #   correlation_wait_for_ready_s     — idle before this segment (poll/sleep since last segment end)
@@ -904,16 +907,27 @@ def correlation_worker(
             )
             if trajectory_jsonl_path and frame_decisions:
                 live_net_acc.ingest_frame_decisions(frame_decisions)
+                t_net0 = time.time()
                 run_net_crossings_from_accumulator(
                     live_net_acc,
                     correlation_output_dir,
                     trajectory_jsonl_path,
                 )
+                t_net_crossings = time.time() - t_net0
+                if profiler:
+                    profiler.record(
+                        "correlation_net_crossings_live_s",
+                        t_net_crossings,
+                        write_immediately=True,
+                        batch=correlation_batch,
+                        metadata=seg_meta,
+                    )
                 if enable_correlation_bounce_videos:
                     bounce_csv_path = os.path.join(
                         correlation_output_dir, "bounce_events.csv"
                     )
                     if os.path.exists(bounce_csv_path):
+                        t_bs0 = time.time()
                         _, bounce_clip_row_src = run_bounce_clips_incremental(
                             bounce_csv_path=bounce_csv_path,
                             camera="source",
@@ -928,6 +942,16 @@ def correlation_worker(
                             pause_frames=bounce_pause_frames,
                             limit=bounce_limit,
                         )
+                        t_bounce_src = time.time() - t_bs0
+                        if profiler:
+                            profiler.record(
+                                "correlation_bounce_clips_source_s",
+                                t_bounce_src,
+                                write_immediately=True,
+                                batch=correlation_batch,
+                                metadata=seg_meta,
+                            )
+                        t_bk0 = time.time()
                         _, bounce_clip_row_snk = run_bounce_clips_incremental(
                             bounce_csv_path=bounce_csv_path,
                             camera="sink",
@@ -942,6 +966,15 @@ def correlation_worker(
                             pause_frames=bounce_pause_frames,
                             limit=bounce_limit,
                         )
+                        t_bounce_snk = time.time() - t_bk0
+                        if profiler:
+                            profiler.record(
+                                "correlation_bounce_clips_sink_s",
+                                t_bounce_snk,
+                                write_immediately=True,
+                                batch=correlation_batch,
+                                metadata=seg_meta,
+                            )
             # ============ END TRAJECTORY CREATION ============
             
             # Optional: cam1 overlay videos (timed separately)
@@ -1060,7 +1093,13 @@ def correlation_worker(
 
             complete_segment_duration = time.time() - complete_segment_start_time
             t_accounted = (
-                t_pairwise + t_trajectory + t_viz_overlay + t_viz_stitched
+                t_pairwise
+                + t_trajectory
+                + t_viz_overlay
+                + t_viz_stitched
+                + t_net_crossings
+                + t_bounce_src
+                + t_bounce_snk
             )
             t_overhead = complete_segment_duration - t_accounted
             if profiler:
@@ -1086,8 +1125,9 @@ def correlation_worker(
                     metadata=(
                         f"{seg_meta},wait_ready={t_wait_ready:.4f},pairwise={t_pairwise:.4f},"
                         f"trajectory={t_trajectory:.4f},viz_overlay={t_viz_overlay:.4f},"
-                        f"viz_stitched={t_viz_stitched:.4f},accounted={t_accounted:.4f},"
-                        f"overhead={t_overhead:.4f}"
+                        f"viz_stitched={t_viz_stitched:.4f},net_crossings={t_net_crossings:.4f},"
+                        f"bounce_src={t_bounce_src:.4f},bounce_snk={t_bounce_snk:.4f},"
+                        f"accounted={t_accounted:.4f},overhead={t_overhead:.4f}"
                     ),
                 )
                 profiler.write_correlation_segment_breakdown(
@@ -1098,6 +1138,9 @@ def correlation_worker(
                     t_trajectory=t_trajectory,
                     t_viz_overlay=t_viz_overlay,
                     t_viz_stitched=t_viz_stitched,
+                    t_net_crossings=t_net_crossings,
+                    t_bounce_src=t_bounce_src,
+                    t_bounce_snk=t_bounce_snk,
                     t_accounted=t_accounted,
                     t_overhead=t_overhead,
                     t_wall=complete_segment_duration,
@@ -1106,7 +1149,8 @@ def correlation_worker(
                 f"[CorrelationWorker] Batch {correlation_batch} — timing (s)  "
                 f"wait_before={t_wait_ready:.3f} | "
                 f"pairwise={t_pairwise:.3f} + trajectory={t_trajectory:.3f} + "
-                f"viz_cam1={t_viz_overlay:.3f} + viz_stitched={t_viz_stitched:.3f} "
+                f"viz_cam1={t_viz_overlay:.3f} + viz_stitched={t_viz_stitched:.3f} + "
+                f"net_x={t_net_crossings:.3f} + bounce_src={t_bounce_src:.3f} + bounce_snk={t_bounce_snk:.3f} "
                 f"= accounted {t_accounted:.3f} | overhead {t_overhead:.3f} | "
                 f"wall {complete_segment_duration:.3f}",
                 flush=True,

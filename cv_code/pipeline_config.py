@@ -93,8 +93,8 @@ class PipelineConfig:
     correlation_source_segments_dir: str = ""
     correlation_sink_segments_dir: str = ""
     correlation_bounce_output_dir: str = ""
-    correlation_bounce_frames_before: int = 8
-    correlation_bounce_frames_after: int = 8
+    correlation_bounce_frames_before: int = 5
+    correlation_bounce_frames_after: int = 5
     correlation_bounce_pause_frames: int = 4
     correlation_bounce_limit: Optional[int] = None
 

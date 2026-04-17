@@ -12,8 +12,8 @@ def run_bounce_videos(
     segments_dir: str,
     output_dir: str,
     triplet_csv_path: str = "",
-    frames_before: int = 8,
-    frames_after: int = 8,
+    frames_before: int = 5,
+    frames_after: int = 5,
     pause_frames: int = 4,
     limit: Optional[int] = None,
 ) -> bool:
