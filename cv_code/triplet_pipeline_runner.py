@@ -202,6 +202,8 @@ class TripletPipeline:
 
         out = (self.config.unique_output_dir or "").strip()
         if out:
+            # Path convention: when unique_output_dir is set, reader manifest CSVs are
+            # always materialized under <unique_output_dir>/reader/source|sink.
             src_manifest_dir = os.path.join(out, "reader", "source")
             sink_manifest_dir = os.path.join(out, "reader", "sink")
             os.makedirs(src_manifest_dir, exist_ok=True)

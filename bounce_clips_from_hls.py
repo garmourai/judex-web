@@ -35,6 +35,17 @@ from typing import Dict, List, Optional, Tuple
 import cv2
 import numpy as np
 
+from bounce_clips_config import (
+    DEFAULT_BOUNCE_CSV,
+    DEFAULT_CAMERA,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_READER_MANIFEST_SINK,
+    DEFAULT_READER_MANIFEST_SOURCE,
+    DEFAULT_SEGMENTS_DIR_SINK,
+    DEFAULT_SEGMENTS_DIR_SOURCE,
+    DEFAULT_TRIPLET_CSV,
+)
+
 BBox2D = Dict[str, float]
 
 # Ctrl+C: OpenCV spends long stretches in C extensions (VideoCapture.read / VideoWriter.write),
@@ -85,23 +96,8 @@ MANIFEST_FILENAME = "hls_segment_frame_index.csv"
 CROP_MAX = 300  # max side length; actual crop may be smaller near borders
 
 # ---------------------------------------------------------------------------
-# Default paths (single place to edit for your deployment)
+# Default paths are provided by bounce_clips_config.py at repo root.
 # ---------------------------------------------------------------------------
-_DATA_ROOT = "/mnt/data"
-_CV_OUTPUT = f"{_DATA_ROOT}/cv_output"
-_SYNC_REPORTS = f"{_DATA_ROOT}/mar30_test/sync_reports"
-_SEG_1547 = f"{_SYNC_REPORTS}/segments_1547/sync"
-
-DEFAULT_BOUNCE_CSV = f"{_CV_OUTPUT}/correlation/bounce_events.csv"
-DEFAULT_CAMERA = "both"
-DEFAULT_SEGMENTS_DIR_SOURCE = f"{_SYNC_REPORTS}/ts_segments_source/1547"
-DEFAULT_SEGMENTS_DIR_SINK = f"{_SYNC_REPORTS}/ts_segments_sink/1547"
-# Same layout as triplet pipeline (unique_output_dir/reader/source|sink/hls_segment_frame_index.csv)
-DEFAULT_READER_MANIFEST_SOURCE = f"{_CV_OUTPUT}/reader/source"
-DEFAULT_READER_MANIFEST_SINK = f"{_CV_OUTPUT}/reader/sink"
-DEFAULT_TRIPLET_CSV = f"{_SEG_1547}/hls_sync_1547_triple.csv"
-DEFAULT_OUTPUT_DIR = f"{_CV_OUTPUT}/bounce_clips"
-DEFAULT_STATE_FILE = ""  # empty => <output-dir>/bounce_clips_cursor.json
 
 
 def _load_segment_frame_index_for_bounce(manifest_dir: str) -> Tuple[List[int], List[int]]:
@@ -441,6 +437,60 @@ def _save_cursor_state(path: str, next_row_index: int) -> None:
             pass
 
 
+def _append_clip_map_row(
+    csv_path: str,
+    *,
+    row_index: int,
+    camera: str,
+    bounce_frame: int,
+    clip_name: str,
+    clip_path: str,
+    status: str,
+    decode_s: float,
+    crop_s: float,
+    write_s: float,
+    total_s: float,
+) -> None:
+    """Append one sidecar mapping row for downstream consumers."""
+    parent = os.path.dirname(os.path.abspath(csv_path))
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+
+    fieldnames = [
+        "row_index",
+        "camera",
+        "bounce_frame",
+        "clip_name",
+        "clip_path",
+        "status",
+        "decode_s",
+        "crop_s",
+        "write_s",
+        "total_s",
+        "updated_at",
+    ]
+    row = {
+        "row_index": int(row_index),
+        "camera": camera,
+        "bounce_frame": int(bounce_frame),
+        "clip_name": clip_name,
+        "clip_path": clip_path,
+        "status": status,
+        "decode_s": f"{float(decode_s):.6f}",
+        "crop_s": f"{float(crop_s):.6f}",
+        "write_s": f"{float(write_s):.6f}",
+        "total_s": f"{float(total_s):.6f}",
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+    write_header = not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0
+    with open(csv_path, "a", encoding="utf-8", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=fieldnames)
+        if write_header:
+            w.writeheader()
+        w.writerow(row)
+
+
 def _resolve_read_indices(
     camera: str,
     source_frame_ids: List[int],
@@ -572,6 +622,7 @@ def _process_rows_with_reader(
     frames_after: int,
     pause_frames: int,
     output_dir: str,
+    clip_map_csv: str,
 ) -> Tuple[int, int]:
     """Process rows in bounce_frame order; returns (n_ok, n_skip)."""
 
@@ -649,6 +700,19 @@ def _process_rows_with_reader(
                 n_out = len(source_frame_ids) - 1 + max(1, pause_frames)
             else:
                 n_out = len(source_frame_ids)
+            _append_clip_map_row(
+                clip_map_csv,
+                row_index=row_index,
+                camera=camera,
+                bounce_frame=bounce_frame,
+                clip_name=out_name,
+                clip_path=out_path,
+                status="ok",
+                decode_s=d,
+                crop_s=c,
+                write_s=w,
+                total_s=tot,
+            )
             print(
                 f"[bounce_clips_from_hls] clip profile decode={d:.3f}s crop={c:.3f}s "
                 f"write={w:.3f}s total={tot:.3f}s | bounce_frame={bounce_frame} "
@@ -656,6 +720,19 @@ def _process_rows_with_reader(
             )
             n_ok += 1
         else:
+            _append_clip_map_row(
+                clip_map_csv,
+                row_index=row_index,
+                camera=camera,
+                bounce_frame=bounce_frame,
+                clip_name=out_name,
+                clip_path=out_path,
+                status="failed",
+                decode_s=d,
+                crop_s=c,
+                write_s=w,
+                total_s=tot,
+            )
             print(
                 f"[bounce_clips_from_hls] clip profile decode={d:.3f}s crop={c:.3f}s "
                 f"write={w:.3f}s total={tot:.3f}s | bounce_frame={bounce_frame} "
@@ -745,6 +822,14 @@ def main() -> None:
         default="",
         help="JSON file storing next_row_index (default: <output-dir>/bounce_clips_cursor.json)",
     )
+    p.add_argument(
+        "--clips-map-csv",
+        default="",
+        help=(
+            "Sidecar CSV for row->clip mapping. "
+            "Default: <dir of --bounce-csv>/bounce_events_clips.csv"
+        ),
+    )
     args = p.parse_args()
     _apply_default_paths(args)
 
@@ -760,6 +845,11 @@ def main() -> None:
     os.makedirs(args.output_dir, exist_ok=True)
 
     state_path = args.state_file or os.path.join(args.output_dir, "bounce_clips_cursor.json")
+    clips_map_csv = args.clips_map_csv or os.path.join(
+        os.path.dirname(os.path.abspath(args.bounce_csv)),
+        "bounce_events_clips.csv",
+    )
+    print(f"[bounce_clips_from_hls] clips map CSV: {clips_map_csv!r}", flush=True)
 
     triplet_map = _load_triplet_source_to_sink(args.triplet_csv or "")
 
@@ -829,6 +919,7 @@ def main() -> None:
                             frames_after=args.frames_after,
                             pause_frames=args.pause_frames,
                             output_dir=out,
+                            clip_map_csv=clips_map_csv,
                         )
                         batch_ok += n_ok
                         batch_skip += n_skip

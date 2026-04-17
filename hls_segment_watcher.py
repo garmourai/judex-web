@@ -26,6 +26,16 @@ import sys
 import time
 from typing import Optional
 
+from hls_segment_watcher_config import (
+    DEST_HQ_DEFAULT,
+    DEST_SINK_DEFAULT,
+    WORK_ROOT_DEFAULT,
+    default_out_dir,
+    remote_frame_log_path,
+    remote_playlist_path,
+    remote_ts_dir,
+)
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_config(variables_dir: str, track_id_override: Optional[str] = None) -> dict:
@@ -220,12 +230,9 @@ def rsync_ts_files(
     dry_run: bool = False,
 ) -> bool:
     """rsync *.ts + *.m3u8 only from one remote Pi. Returns True on success."""
-    if is_sink:
-        remote = f"/home/pi/sink_code/ts_segments/{track_id}/"
-        local = f"{dest_sink.rstrip('/')}/{track_id}/"
-    else:
-        remote = f"/home/pi/source_code/ts_segments/{track_id}/"
-        local = f"{dest_hq.rstrip('/')}/{track_id}/"
+    remote = f"{remote_ts_dir(is_sink, track_id)}/"
+    local_root = dest_sink if is_sink else dest_hq
+    local = f"{local_root.rstrip('/')}/{track_id}/"
 
     os.makedirs(local, exist_ok=True)
 
@@ -271,16 +278,10 @@ def save_state(path: str, state: dict) -> None:
 
 def _stream_remote_paths(stream: str, track_id: str) -> tuple[str, str]:
     """Return (m3u8_remote_path, frame_log_remote_path) for hq or sink."""
-    if stream == "hq":
-        return (
-            f"/home/pi/source_code/ts_segments/{track_id}/playlist.m3u8",
-            f"/home/pi/source_code/streamed_packets/{track_id}/hls_frame_log.csv",
-        )
-    else:  # sink
-        return (
-            f"/home/pi/sink_code/ts_segments/{track_id}/playlist.m3u8",
-            f"/home/pi/sink_code/streamed_packets/{track_id}/hls_frame_log.csv",
-        )
+    return (
+        remote_playlist_path(stream, track_id),
+        remote_frame_log_path(stream, track_id),
+    )
 
 
 def run_split_pass(
@@ -306,7 +307,7 @@ def run_split_pass(
 
     # ── Fetch m3u8 (only re-read when more segments may have arrived) ─────────
     if stream == "source":
-        m3u8_local = f"/home/pi/source_code/ts_segments/{track_id}/playlist.m3u8"
+        m3u8_local = remote_playlist_path("source", track_id)
         if not os.path.isfile(m3u8_local):
             return 0, None, None
         with open(m3u8_local, "r", errors="replace") as f:
@@ -326,7 +327,7 @@ def run_split_pass(
 
     # ── Fetch new frame log rows ───────────────────────────────────────────────
     if stream == "source":
-        log_local = f"/home/pi/source_code/streamed_packets/{track_id}/hls_frame_log.csv"
+        log_local = remote_frame_log_path("source", track_id)
         new_rows = load_local_rows_incremental(log_local, rows_consumed)
     else:
         _, log_path = _stream_remote_paths(stream, track_id)
@@ -348,7 +349,7 @@ def run_split_pass(
         # Fetch the very first data row to anchor the epoch correctly,
         # even if we've already consumed many rows this session.
         if stream == "source":
-            log_path = f"/home/pi/source_code/streamed_packets/{track_id}/hls_frame_log.csv"
+            log_path = remote_frame_log_path("source", track_id)
             first = fetch_first_data_row(None, log_path, ssh_user)
         else:
             _, log_path = _stream_remote_paths(stream, track_id)
@@ -674,7 +675,7 @@ def main() -> None:
         )
     )
     p.add_argument("--track-id", default=None, help="Override track ID")
-    p.add_argument("--work-root", default="/home/pi/source_code")
+    p.add_argument("--work-root", default=WORK_ROOT_DEFAULT)
     p.add_argument(
         "--variables-dir", default=None,
         help="Directory with config.yaml + track_video_index.json "
@@ -682,10 +683,10 @@ def main() -> None:
     )
     p.add_argument(
         "--out-dir", default=None,
-        help="Output root (default: /home/pi/judex-web/sync_reports/segments_<id>)",
+        help=f"Output root (default: {default_out_dir('<track_id>')})",
     )
-    p.add_argument("--dest-hq", default="/home/pi/judex-web/sync_reports/ts_segments_hq")
-    p.add_argument("--dest-sink", default="/home/pi/judex-web/sync_reports/ts_segments_sink")
+    p.add_argument("--dest-hq", default=DEST_HQ_DEFAULT)
+    p.add_argument("--dest-sink", default=DEST_SINK_DEFAULT)
     p.add_argument("--ssh-user", default="pi")
     p.add_argument("--poll-seconds", type=float, default=4.0)
     p.add_argument("--reset-state", action="store_true", help="Clear state before run")
@@ -709,9 +710,7 @@ def main() -> None:
     hq_ip = hq_ips[0] if hq_ips else None
     sink_ip = sink_ips[0] if sink_ips else None
 
-    out_dir = args.out_dir or os.path.join(
-        "/home/pi/judex-web/sync_reports", f"segments_{track_id}"
-    )
+    out_dir = args.out_dir or default_out_dir(track_id)
     os.makedirs(out_dir, exist_ok=True)
     state_path = os.path.join(out_dir, "watcher_state.json")
 

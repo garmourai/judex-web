@@ -57,20 +57,20 @@ TRIPLET_CSV_PATH = "/mnt/data/mar30_test/sync_reports/segments_1547/sync/hls_syn
 # Inclusive range; use None for no bound on that side. If no row falls in range, inference writes
 # no frames and correlation sees empty dist_tracker CSVs — widen the range or use None, None.
 TRIPLET_SOURCE_INDEX_MIN = 0
-TRIPLET_SOURCE_INDEX_MAX = 50000
+TRIPLET_SOURCE_INDEX_MAX = 100000
 
 # Shared output root (CSV dirs, profiler, TrackNet overlay MP4s under tracknet_overlay/<source|sink>/)
 UNIQUE_OUTPUT_DIR = "/mnt/data/cv_output"
 TRACKNET_VISUALIZATION_DIR = f"{UNIQUE_OUTPUT_DIR}/tracknet_overlay"
 
 # Inference thread: TrackNet bbox overlay MP4s per batch (cv_code/inference/inference.py)
-enable_tracknet_batch_overlay_videos = True
+enable_tracknet_batch_overlay_videos = False
 
 # Correlation thread: optional MP4 outputs (see cv_code/correlation/correlation_worker.py)
 # — trajectory_videos: 3D points reprojected onto camera-1 frames (under unique_output_dir/<cam1>/visualization_videos/)
 # — stitched_videos: side-by-side both cameras with correlation labels (under unique_output_dir/stitched_correlation_videos/)
-enable_correlation_trajectory_videos = True
-enable_correlation_stitched_videos = True
+enable_correlation_trajectory_videos = False
+enable_correlation_stitched_videos = False
 
 
 def _reset_output_dir(path: str) -> None:
