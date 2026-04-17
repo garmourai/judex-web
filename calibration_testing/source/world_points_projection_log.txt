@@ -1,5 +1,0 @@
-# world_points.txt — same rvec/tvec as overlay. distorted = raw image; undistorted = newK (matches this PNG).
-# Compare to source.png using distorted_px only.
-#1  world_m=(3.0480,6.7050,0.0000)  distorted_px=(718.88,377.86)  undistorted_newK_px=(652.48,439.95)
-#2  world_m=(1.5240,3.3525,0.0000)  distorted_px=(628.17,302.94)  undistorted_newK_px=(567.91,370.17)
-#3  world_m=(4.5720,10.0575,0.0000)  distorted_px=(899.45,527.68)  undistorted_newK_px=(820.52,578.59)
