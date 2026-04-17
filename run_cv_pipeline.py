@@ -71,7 +71,6 @@ enable_tracknet_batch_overlay_videos = True
 # — stitched_videos: side-by-side both cameras with correlation labels (under unique_output_dir/stitched_correlation_videos/)
 enable_correlation_trajectory_videos = True
 enable_correlation_stitched_videos = True
-enable_correlation_bounce_videos = True
 
 
 def _reset_output_dir(path: str) -> None:
@@ -113,13 +112,9 @@ config = PipelineConfig(
     enable_tracknet_visualization=enable_tracknet_batch_overlay_videos,
     enable_visualization=enable_correlation_trajectory_videos,
     enable_stitched_visualization=enable_correlation_stitched_videos,
-    enable_correlation_bounce_videos=enable_correlation_bounce_videos,
     correlation_triplet_csv_path=TRIPLET_CSV_PATH,
     correlation_source_segments_dir="/mnt/data/mar30_test/sync_reports/ts_segments_source/1547/",
     correlation_sink_segments_dir="/mnt/data/mar30_test/sync_reports/ts_segments_sink/1547/",
-    correlation_bounce_output_dir=f"{UNIQUE_OUTPUT_DIR}/bounce_clips",
-    correlation_bounce_frames_before=5,
-    correlation_bounce_frames_after=5,
 )
 
 profiler = TimeProfiler(filepath=f"{UNIQUE_OUTPUT_DIR}/time_profiling_results.txt")

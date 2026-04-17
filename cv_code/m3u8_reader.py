@@ -29,6 +29,34 @@ _hls_manifest = importlib.util.module_from_spec(_spec_hls)
 _spec_hls.loader.exec_module(_hls_manifest)
 append_segment_manifest_row = _hls_manifest.append_segment_manifest_row
 load_segment_manifest = _hls_manifest.load_segment_manifest
+manifest_path = _hls_manifest.manifest_path
+
+
+def assert_hls_segment_inputs_or_raise(
+    segments_dir: str,
+    *,
+    manifest_dir: Optional[str] = None,
+    m3u8_filename: str = "playlist.m3u8",
+) -> None:
+    """
+    Require segments_dir and playlist.m3u8 to exist.
+    If hls_segment_frame_index.csv exists under manifest_dir (default: segments_dir),
+    it must pass load_segment_manifest (otherwise raise — no silent repair).
+    """
+    if not os.path.isdir(segments_dir):
+        raise FileNotFoundError(f"HLS segments directory does not exist: {segments_dir!r}")
+    m3u8_path = os.path.join(segments_dir, m3u8_filename)
+    if not os.path.isfile(m3u8_path):
+        raise FileNotFoundError(f"HLS playlist not found: {m3u8_path!r}")
+    md = manifest_dir if manifest_dir is not None else segments_dir
+    mp = manifest_path(md)
+    if os.path.isfile(mp):
+        loaded = load_segment_manifest(md)
+        if loaded is None:
+            raise ValueError(
+                f"Invalid HLS segment manifest (fix or remove): {mp!r} — "
+                "expected contiguous segment_index rows and consistent cumulative_start_frame / frame_count."
+            )
 
 
 class M3U8SegmentReader:
@@ -59,6 +87,7 @@ class M3U8SegmentReader:
         stop_event: threading.Event,
         poll_interval: float = 0.5,
         m3u8_filename: str = "playlist.m3u8",
+        manifest_dir: Optional[str] = None,
     ):
         """
         Args:
@@ -67,16 +96,34 @@ class M3U8SegmentReader:
             stop_event: Checked during polling — returns None if set.
             poll_interval: Seconds to sleep between existence checks.
             m3u8_filename: Name of the m3u8 playlist file inside segments_dir.
+            manifest_dir: Directory for hls_segment_frame_index.csv (default: same as segments_dir).
+                          Triplet pipeline uses unique_output_dir/reader/source|sink.
         """
         self._segments_dir = segments_dir
+        self._manifest_dir = manifest_dir if manifest_dir is not None else segments_dir
         self._stop_event = stop_event
         self._poll_interval = poll_interval
         self._m3u8_path = os.path.join(segments_dir, m3u8_filename)
 
         # cumulative_offsets[i] = first global frame index in segment i
-        # Built lazily as segment entries appear in the m3u8.
+        # Built lazily as segment entries appear in the m3u8, or loaded from
+        # hls_segment_frame_index.csv when present and valid.
         self._cumulative_offsets: List[int] = []  # len = number of known segments
         self._frame_counts: List[int] = []          # frame count per segment
+
+        mp = manifest_path(self._manifest_dir)
+        if os.path.isfile(mp):
+            loaded = load_segment_manifest(self._manifest_dir)
+            if loaded is None:
+                raise ValueError(
+                    f"Invalid HLS segment manifest: {mp!r} — "
+                    "file exists but failed validation (contiguous segments, offset chain)."
+                )
+            self._cumulative_offsets = list(loaded[0])
+            self._frame_counts = list(loaded[1])
+            print(
+                f"[M3U8SegmentReader] Loaded {len(self._frame_counts)} segments from {mp!r}"
+            )
 
         # Currently open VideoCapture
         self._cap: Optional[cv2.VideoCapture] = None
@@ -290,7 +337,7 @@ class M3U8SegmentReader:
             self._cumulative_offsets.append(offset)
             self._frame_counts.append(frame_count)
             append_segment_manifest_row(
-                self._segments_dir, next_idx, offset, frame_count
+                self._manifest_dir, next_idx, offset, frame_count
             )
             print(f"[M3U8SegmentReader] seg {next_idx}: {frame_count} frames "
                   f"(cumulative offset {offset})")

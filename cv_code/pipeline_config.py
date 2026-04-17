@@ -83,8 +83,6 @@ class PipelineConfig:
     # When true, creates a stitched correlation video showing both camera views side-by-side
     # with correlation points labeled (A, B, C...). Requires enable_visualization=true and both staging buffers.
     enable_stitched_visualization: bool = False
-    # When true, correlation thread runs bounce clip generation from bounce events.
-    enable_correlation_bounce_videos: bool = False
     # TrackNet: draw predict_multi_location bboxes on TrackNet-sized frames and write one MP4 per inference batch.
     enable_tracknet_visualization: bool = False
 
@@ -92,11 +90,6 @@ class PipelineConfig:
     correlation_triplet_csv_path: str = ""
     correlation_source_segments_dir: str = ""
     correlation_sink_segments_dir: str = ""
-    correlation_bounce_output_dir: str = ""
-    correlation_bounce_frames_before: int = 5
-    correlation_bounce_frames_after: int = 5
-    correlation_bounce_pause_frames: int = 4
-    correlation_bounce_limit: Optional[int] = None
 
     # Video info (populated after setup)
     camera_1_total_frames: int = 0

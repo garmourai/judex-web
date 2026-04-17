@@ -22,6 +22,7 @@ from .pipeline_config import PipelineConfig
 from .inference.inference import RealtimeInference
 from .inference.inference_worker import inference_worker
 from .correlation.correlation_worker import correlation_worker_wrapper
+from .m3u8_reader import assert_hls_segment_inputs_or_raise
 
 from .triplet_csv_reader import OriginalFrameBuffer, TripletCSVReaderWorker
 
@@ -199,6 +200,30 @@ class TripletPipeline:
     def _start_threads(self) -> None:
         """Create and start the three worker threads."""
 
+        out = (self.config.unique_output_dir or "").strip()
+        if out:
+            src_manifest_dir = os.path.join(out, "reader", "source")
+            sink_manifest_dir = os.path.join(out, "reader", "sink")
+            os.makedirs(src_manifest_dir, exist_ok=True)
+            os.makedirs(sink_manifest_dir, exist_ok=True)
+            print(
+                f"[TripletPipeline] HLS frame index CSVs under output: "
+                f"{os.path.join(out, 'reader', 'source', 'hls_segment_frame_index.csv')!r}, "
+                f"{os.path.join(out, 'reader', 'sink', 'hls_segment_frame_index.csv')!r}",
+                flush=True,
+            )
+            assert_hls_segment_inputs_or_raise(
+                self._source_segments_dir, manifest_dir=src_manifest_dir
+            )
+            assert_hls_segment_inputs_or_raise(
+                self._sink_segments_dir, manifest_dir=sink_manifest_dir
+            )
+        else:
+            src_manifest_dir = None
+            sink_manifest_dir = None
+            assert_hls_segment_inputs_or_raise(self._source_segments_dir)
+            assert_hls_segment_inputs_or_raise(self._sink_segments_dir)
+
         # 1. TripletCSVReaderWorker
         reader_worker = TripletCSVReaderWorker(
             triplet_csv_path=self._triplet_csv_path,
@@ -220,6 +245,8 @@ class TripletPipeline:
             triplet_source_index_min=self.config.triplet_source_index_min,
             triplet_source_index_max=self.config.triplet_source_index_max,
             profiler=self._profiler,
+            source_manifest_dir=src_manifest_dir,
+            sink_manifest_dir=sink_manifest_dir,
         )
         self._reader_thread = threading.Thread(
             target=reader_worker.run,
@@ -272,15 +299,6 @@ class TripletPipeline:
                     "original_frame_width": self.config.camera_1_original_frame_width,
                     "original_frame_height": self.config.camera_1_original_frame_height,
                     "force_stop_event": self._force_stop_event,
-                    "enable_correlation_bounce_videos": self.config.enable_correlation_bounce_videos,
-                    "bounce_triplet_csv_path": self.config.correlation_triplet_csv_path,
-                    "bounce_source_segments_dir": self.config.correlation_source_segments_dir,
-                    "bounce_sink_segments_dir": self.config.correlation_sink_segments_dir,
-                    "bounce_output_dir": self.config.correlation_bounce_output_dir,
-                    "bounce_frames_before": self.config.correlation_bounce_frames_before,
-                    "bounce_frames_after": self.config.correlation_bounce_frames_after,
-                    "bounce_pause_frames": self.config.correlation_bounce_pause_frames,
-                    "bounce_limit": self.config.correlation_bounce_limit,
                 },
                 daemon=False,
                 name="CorrelationWorker",

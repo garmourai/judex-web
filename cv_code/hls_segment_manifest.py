@@ -1,9 +1,11 @@
 """
-Append-only segment index written next to HLS segments (same dir as playlist.m3u8).
+Append-only segment index for global frame lookup (hls_segment_frame_index.csv).
 
-Written when each seg_*.ts frame count is first known (triplet reader path).
-Loaded by M3U8SegmentReader on startup so bounce / later reads jump to segments
-without re-probing the whole playlist history.
+The file may live next to playlist.m3u8 (manifest_dir == segments_dir) or under
+the triplet pipeline output, e.g. {unique_output_dir}/reader/source/ or .../sink/.
+
+Written when each seg_*.ts frame count is first known (M3U8SegmentReader).
+Loaded on startup so restarts skip re-probing known segments.
 """
 
 from __future__ import annotations
@@ -48,13 +50,13 @@ def append_segment_manifest_row(
 
 
 def load_segment_manifest(
-    segments_dir: str,
+    manifest_dir: str,
 ) -> Optional[Tuple[List[int], List[int]]]:
     """
     Load cumulative_offsets and frame_counts for segments 0..N-1 if the file
     is present, contiguous, and self-consistent. Otherwise return None.
     """
-    path = manifest_path(segments_dir)
+    path = manifest_path(manifest_dir)
     if not os.path.exists(path):
         return None
     by_seg: dict[int, Tuple[int, int]] = {}

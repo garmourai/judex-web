@@ -195,13 +195,11 @@ class TimeProfiler:
         t_overhead: float,
         t_wall: float,
         t_net_crossings: float = 0.0,
-        t_bounce_src: float = 0.0,
-        t_bounce_snk: float = 0.0,
     ) -> None:
         """
         Append a readable block to the profiling file matching console segment timing.
         wait = idle before this segment; pairwise + trajectory + viz + viz_stitched
-        + net_crossings + bounce clips = accounted; + overhead ≈ wall.
+        + net_crossings = accounted; + overhead ≈ wall.
         """
         if not self._filepath:
             return
@@ -221,8 +219,6 @@ class TimeProfiler:
                 f"  viz cam1 overlay         (correlation_segment_viz_overlay_s)   {t_viz_overlay:10.4f} s\n",
                 f"  viz stitched             (correlation_segment_viz_stitched_s)  {t_viz_stitched:10.4f} s\n",
                 f"  net crossings (live)     (correlation_net_crossings_live_s)    {t_net_crossings:10.4f} s\n",
-                f"  bounce clips source      (correlation_bounce_clips_source_s)   {t_bounce_src:10.4f} s\n",
-                f"  bounce clips sink        (correlation_bounce_clips_sink_s)     {t_bounce_snk:10.4f} s\n",
                 "-" * 80 + "\n",
                 f"  accounted sum            (correlation_segment_accounted_s)     {t_accounted:10.4f} s\n",
                 f"  overhead                 (correlation_segment_overhead_s)      {t_overhead:10.4f} s\n",

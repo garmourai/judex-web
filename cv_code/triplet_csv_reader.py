@@ -294,10 +294,14 @@ class TripletCSVReaderWorker:
         triplet_source_index_min: Optional[int] = None,
         triplet_source_index_max: Optional[int] = None,
         profiler=None,
+        source_manifest_dir: Optional[str] = None,
+        sink_manifest_dir: Optional[str] = None,
     ):
         self._triplet_csv_path = triplet_csv_path
         self._source_segments_dir = source_segments_dir
         self._sink_segments_dir = sink_segments_dir
+        self._source_manifest_dir = source_manifest_dir
+        self._sink_manifest_dir = sink_manifest_dir
         self._camera_1_id = camera_1_id
         self._camera_2_id = camera_2_id
         self._tracknet_buffer_1 = tracknet_buffer_1
@@ -352,15 +356,20 @@ class TripletCSVReaderWorker:
             segments_dir=self._source_segments_dir,
             stop_event=self._stop_event,
             poll_interval=self._poll_interval,
+            manifest_dir=self._source_manifest_dir,
         )
         self._sink_reader = M3U8SegmentReader(
             segments_dir=self._sink_segments_dir,
             stop_event=self._stop_event,
             poll_interval=self._poll_interval,
+            manifest_dir=self._sink_manifest_dir,
         )
+        _src_m = self._source_manifest_dir or self._source_segments_dir
+        _sk_m = self._sink_manifest_dir or self._sink_segments_dir
         print(
             "[TripletCSVReader] trace: M3U8SegmentReader created "
-            f"(source_dir={self._source_segments_dir!r}, sink_dir={self._sink_segments_dir!r})",
+            f"(source_dir={self._source_segments_dir!r}, sink_dir={self._sink_segments_dir!r}; "
+            f"manifest dirs: source={_src_m!r}, sink={_sk_m!r})",
             flush=True,
         )
 
