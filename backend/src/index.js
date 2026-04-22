@@ -2,7 +2,6 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { createReadStream } from 'fs';
 import { promises as fs } from 'fs';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
@@ -28,6 +27,76 @@ const TRACK_INDEX_PATH = path.join(SOURCE_CODE_DIR, 'variable_files', 'track_vid
 const SYNC_REPORTS_DIR = path.resolve(__dirname, '..', '..', 'sync_reports');
 const WATCHER_SCRIPT = path.resolve(__dirname, '..', '..', 'hls_segment_watcher.py');
 const EVENTS_ROOT = path.resolve(__dirname, '..', '..', 'events');
+
+// Jetson SSH config
+const JETSON_HOST = 'jetson@192.168.0.148';
+const JETSON_SSH_OPTS = ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10', '-o', 'StrictHostKeyChecking=accept-new'];
+const JETSON_EVENTS_CSV = '/home/jetson/Desktop/cv_output/correlation/bounce_events.csv';
+const JETSON_CLIPS_CSV = '/home/jetson/Desktop/cv_output/correlation/bounce_events_clips.csv';
+const JETSON_CLIPS_DIR = '/home/jetson/Desktop/cv_output/bounce_clips';
+
+async function sshCatText(remotePath) {
+  const { stdout } = await execAsync(
+    `ssh ${JETSON_SSH_OPTS.join(' ')} ${JETSON_HOST} cat ${remotePath}`,
+    { maxBuffer: 32 * 1024 * 1024 },
+  );
+  return stdout;
+}
+
+// SSE: live bounce events streaming
+const sseClients = new Set();
+let lastSeenEventRowCount = 0;
+let ssePolling = false;
+
+function parseBounceEventRows(content) {
+  const lines = content.split(/\r?\n/);
+  if (lines.length < 2) return { header: [], events: [] };
+  const header = lines[0].split(',');
+  const bounceFrameIdx = header.indexOf('bounce_frame');
+  const dirIdx = header.indexOf('crossing_direction');
+  const sideIdx = header.indexOf('side');
+  const scoreIdx = header.indexOf('score');
+  const events = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    events.push({
+      frame: Number(cols[bounceFrameIdx]) || 0,
+      direction: cols[dirIdx] || '',
+      side: cols[sideIdx] || '',
+      score: Number(cols[scoreIdx]) || 0,
+    });
+  }
+  return events;
+}
+
+function sseWrite(res, eventName, data) {
+  res.write(`event: ${eventName}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+async function runSsePoller() {
+  if (ssePolling) return;
+  ssePolling = true;
+  while (sseClients.size > 0) {
+    await new Promise((r) => setTimeout(r, 4000));
+    if (sseClients.size === 0) break;
+    try {
+      const content = await sshCatText(JETSON_EVENTS_CSV);
+      const events = parseBounceEventRows(content);
+      if (events.length > lastSeenEventRowCount) {
+        const newEvents = events.slice(lastSeenEventRowCount);
+        lastSeenEventRowCount = events.length;
+        for (const client of sseClients) {
+          sseWrite(client, 'new-events', newEvents);
+        }
+      }
+    } catch (e) {
+      console.error('[jetson-sse] poll error:', e.message);
+    }
+  }
+  ssePolling = false;
+}
 
 const CAMERA_DIRS = {
   source: TS_SEGMENTS_DIR,
@@ -474,48 +543,53 @@ app.get('/cam/:camera/:segmentId/replay.m3u8', async (req, res) => {
   }
 });
 
-// Bounce events for a segment
+// SSE stream: sends all current events on connect, then pushes new rows as they appear on Jetson
+app.get('/api/events/live/stream', async (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  // Send current events as the initial payload
+  try {
+    const content = await sshCatText(JETSON_EVENTS_CSV);
+    const events = parseBounceEventRows(content);
+    // Sync lastSeenEventRowCount to at least what we just read (first client wins)
+    if (events.length > lastSeenEventRowCount) lastSeenEventRowCount = events.length;
+    sseWrite(res, 'init', events);
+  } catch (e) {
+    console.error('[jetson-sse] init fetch error:', e.message);
+    sseWrite(res, 'init', []);
+  }
+
+  sseClients.add(res);
+  runSsePoller();
+
+  req.on('close', () => {
+    sseClients.delete(res);
+  });
+});
+
+// Bounce events for a segment — reads live from Jetson
 app.get('/api/events/:segmentId', async (req, res) => {
   try {
-    const eventsPath = path.join(__dirname, '..', '..', 'events', 'bounce_events.csv');
-    const content = await fs.readFile(eventsPath, 'utf8');
-    const lines = content.split(/\r?\n/);
-    if (lines.length < 2) return res.json([]);
-
-    const header = lines[0].split(',');
-    const bounceFrameIdx = header.indexOf('bounce_frame');
-    const dirIdx = header.indexOf('crossing_direction');
-    const sideIdx = header.indexOf('side');
-    const scoreIdx = header.indexOf('score');
-
-    const events = [];
-    for (let i = 1; i < lines.length; i++) {
-      const line = lines[i].trim();
-      if (!line) continue;
-      const cols = line.split(',');
-      events.push({
-        frame: Number(cols[bounceFrameIdx]) || 0,
-        direction: cols[dirIdx] || '',
-        side: cols[sideIdx] || '',
-        score: Number(cols[scoreIdx]) || 0,
-      });
-    }
-    return res.json(events);
+    const content = await sshCatText(JETSON_EVENTS_CSV);
+    return res.json(parseBounceEventRows(content));
   } catch (err) {
-    if (err?.code === 'ENOENT') return res.json([]);
-    return res.status(500).json({ error: err.message });
+    console.error('[jetson] /api/events error:', err.message);
+    return res.json([]);
   }
 });
 
-// Bounce event clip files (camera + clip_name) for a given bounce_frame — from bounce_events_clips.csv
+// Bounce event clip files (camera + clip_name) for a given bounce_frame — reads live from Jetson
 app.get('/api/event-clips/:bounceFrame', async (req, res) => {
   try {
     const bounceFrame = Number(req.params.bounceFrame);
     if (!Number.isFinite(bounceFrame)) {
       return res.status(400).json({ error: 'Invalid bounce_frame' });
     }
-    const clipsPath = path.join(EVENTS_ROOT, 'bounce_events_clips.csv');
-    const content = await fs.readFile(clipsPath, 'utf8');
+
+    const content = await sshCatText(JETSON_CLIPS_CSV);
     const lines = content.split(/\r?\n/).filter((l) => l.trim());
     if (lines.length < 2) return res.json({ bounceFrame, clips: [] });
 
@@ -544,8 +618,8 @@ app.get('/api/event-clips/:bounceFrame', async (req, res) => {
 
     return res.json({ bounceFrame, clips });
   } catch (err) {
-    if (err?.code === 'ENOENT') return res.json({ bounceFrame: Number(req.params.bounceFrame), clips: [] });
-    return res.status(500).json({ error: err.message });
+    console.error('[jetson] /api/event-clips error:', err.message);
+    return res.json({ bounceFrame: Number(req.params.bounceFrame), clips: [] });
   }
 });
 
@@ -848,98 +922,38 @@ function isSafeBounceClipFilename(s) {
   return typeof s === 'string' && /^[a-z0-9._-]+\.mp4$/i.test(s);
 }
 
-// Explicit Range support for MP4 clips (browsers use 206 Partial Content; headers must be exact).
-// Registered before generic /events static so <video src> always gets bytes, never SPA index.html.
-app.get('/events/bounce_clips/:camera/:filename', async (req, res) => {
+// Stream bounce clip MP4 from Jetson via ssh cat — BounceClipVideo fetches full body as blob so no Range needed.
+app.get('/events/bounce_clips/:camera/:filename', (req, res) => {
   const { camera, filename } = req.params;
   if (!isSafeBounceClipCamera(camera) || !isSafeBounceClipFilename(filename)) {
     return res.status(400).send('Invalid path');
   }
-  const filePath = path.join(EVENTS_ROOT, 'bounce_clips', camera, filename);
-  let st;
-  try {
-    st = await fs.stat(filePath);
-  } catch {
-    return res.status(404).send('Not found');
-  }
-  if (!st.isFile()) return res.status(404).send('Not found');
-
-  const fileSize = st.size;
-  res.setHeader('Accept-Ranges', 'bytes');
+  // Try camera subdirectory first; Jetson may have flat or nested layout
+  const remotePath = `${JETSON_CLIPS_DIR}/${camera}/${filename}`;
   res.setHeader('Content-Type', 'video/mp4');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
+  res.setHeader('Cache-Control', 'no-store');
 
-  const range = req.headers.range;
-  if (range) {
-    const raw = String(range).trim();
-    // "bytes=-500" = last 500 bytes (some players fetch tail for moov)
-    const suffix = /^bytes=-(\d+)$/i.exec(raw);
-    let start;
-    let end;
-    if (suffix) {
-      const n = parseInt(suffix[1], 10);
-      if (!Number.isFinite(n) || n <= 0 || n > fileSize) {
-        res.status(416);
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        return res.end();
-      }
-      start = fileSize - n;
-      end = fileSize - 1;
-    } else {
-      const m = /^bytes=(\d*)-(\d*)$/i.exec(raw);
-      if (!m) {
-        res.status(416);
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        return res.end();
-      }
-      start = m[1] === '' ? 0 : parseInt(m[1], 10);
-      end = m[2] === '' ? fileSize - 1 : parseInt(m[2], 10);
-      if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || start >= fileSize) {
-        res.status(416);
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        return res.end();
-      }
-      if (end >= fileSize) end = fileSize - 1;
-      if (start > end) {
-        res.status(416);
-        res.setHeader('Content-Range', `bytes */${fileSize}`);
-        return res.end();
-      }
-    }
+  const ssh = spawn('ssh', [...JETSON_SSH_OPTS, JETSON_HOST, 'cat', remotePath]);
+  let headersSent = false;
 
-    const chunkSize = end - start + 1;
-    const isEntireFile = start === 0 && end === fileSize - 1;
-    // Many browsers play small / full-range MP4 more reliably as 200 without Content-Range (RFC 7233).
-    if (isEntireFile) {
-      res.status(200);
-      res.setHeader('Content-Length', String(fileSize));
-      const stream = createReadStream(filePath);
-      stream.on('error', () => {
-        if (!res.headersSent) res.status(500).end();
-        else res.destroy();
-      });
-      return stream.pipe(res);
-    }
-
-    res.status(206);
-    res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
-    res.setHeader('Content-Length', String(chunkSize));
-    const stream = createReadStream(filePath, { start, end });
-    stream.on('error', () => {
-      if (!res.headersSent) res.status(500).end();
-      else res.destroy();
-    });
-    return stream.pipe(res);
-  }
-
-  res.status(200);
-  res.setHeader('Content-Length', String(fileSize));
-  const stream = createReadStream(filePath);
-  stream.on('error', () => {
-    if (!res.headersSent) res.status(500).end();
-    else res.destroy();
+  ssh.stdout.once('data', () => {
+    headersSent = true;
+    res.status(200);
   });
-  return stream.pipe(res);
+
+  ssh.stdout.pipe(res);
+
+  ssh.stderr.on('data', (d) => {
+    console.error('[jetson-clip] ssh stderr:', d.toString().trim());
+  });
+
+  ssh.on('exit', (code) => {
+    if (code !== 0 && !headersSent) {
+      res.status(404).send('Clip not found on Jetson');
+    }
+  });
+
+  req.on('close', () => ssh.kill());
 });
 
 // Other files under events/ (if any)

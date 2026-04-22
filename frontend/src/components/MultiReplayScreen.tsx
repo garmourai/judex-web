@@ -137,13 +137,32 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     return () => { cancelled = true; };
   }, [segmentId, minutes]);
 
-  // Fetch bounce events
+  // Live bounce events via SSE — receives all current events on 'init', new rows on 'new-events'
   useEffect(() => {
-    fetch(`/api/events/${segmentId}`)
-      .then((r) => r.json())
-      .then((data) => { if (Array.isArray(data)) setEvents(data); })
-      .catch(() => {});
-  }, [segmentId]);
+    const es = new EventSource('/api/events/live/stream');
+
+    es.addEventListener('init', (e) => {
+      try {
+        const data = JSON.parse(e.data);
+        if (Array.isArray(data)) setEvents(data);
+      } catch {}
+    });
+
+    es.addEventListener('new-events', (e) => {
+      try {
+        const incoming = JSON.parse(e.data);
+        if (Array.isArray(incoming) && incoming.length > 0) {
+          setEvents((prev) => [...prev, ...incoming]);
+        }
+      } catch {}
+    });
+
+    es.onerror = () => {
+      // SSE will auto-reconnect; no user-visible error needed
+    };
+
+    return () => es.close();
+  }, []);
 
   // Set a stable duration from the API response instead of reading
   // the video element's duration (which fluctuates as hls.js loads segments).
