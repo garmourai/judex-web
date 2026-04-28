@@ -1,17 +1,26 @@
 import express from 'express';
+import http2Express from 'http2-express-bridge';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
+import http2 from 'node:http2';
+import os from 'node:os';
+import selfsigned from 'selfsigned';
 
 const execAsync = promisify(exec);
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const app = express();
+// http2-express-bridge wraps Express so its req/res work over both HTTP/1.1
+// and HTTP/2 streams. Without it Node's native http2 compat layer trips on
+// `IncomingMessage._read` because `req.socket._readableState` isn't always
+// populated for HTTP/2 streams when middleware (body-parser etc.) tries to
+// read the body. The wrapper installs the missing shims.
+const app = http2Express(express);
 const PORT = process.env.PORT ?? 3014;
 const DEFAULT_SNAPSHOT_MINUTES = Number(process.env.SNAPSHOT_DEFAULT_MINUTES ?? 5);
 
@@ -627,7 +636,7 @@ app.get('/api/event-clips/:bounceFrame', async (req, res) => {
 app.get('/api/replay/multi/:segmentId', async (req, res) => {
   try {
     const { segmentId } = req.params;
-    const minutes = Number(req.query.minutes) || 5;
+    const minutes = Number(req.query.minutes) || 3;
 
     const syncInfo = await computeSyncInfo(segmentId, minutes);
 
@@ -970,8 +979,75 @@ app.get('*', (req, res) => {
   return res.sendFile(path.join(frontendDist, 'index.html'));
 });
 
-app.listen(PORT, () => {
-  console.log(`Stream backend running at http://localhost:${PORT}`);
+// HTTPS + HTTP/2 listener.
+// Browsers only negotiate HTTP/2 over TLS, so we need a cert. We auto-generate
+// a self-signed one on first start and reuse it across restarts. `allowHTTP1:
+// true` keeps any HTTP/1.1 clients (curl, scripts, the Pi's own tools) working;
+// browsers will pick HTTP/2 via ALPN.
+const TLS_DIR = path.join(__dirname, '..', '.tls');
+const TLS_KEY_PATH = path.join(TLS_DIR, 'key.pem');
+const TLS_CERT_PATH = path.join(TLS_DIR, 'cert.pem');
+
+function collectAltNames() {
+  // Subject Alternative Names: every hostname/IP a browser might use to reach
+  // this backend must be listed, otherwise the TLS handshake fails with
+  // ERR_CERT_COMMON_NAME_INVALID even after the user accepts the warning.
+  const altNames = [
+    { type: 2, value: 'localhost' },
+    { type: 2, value: os.hostname() },
+    { type: 7, value: '127.0.0.1' },
+    { type: 7, value: '::1' },
+  ];
+  for (const list of Object.values(os.networkInterfaces())) {
+    for (const iface of list ?? []) {
+      if (!iface.address) continue;
+      altNames.push({ type: 7, value: iface.address });
+    }
+  }
+  // De-duplicate (same address can appear multiple times across interfaces).
+  const seen = new Set();
+  return altNames.filter((a) => {
+    const k = `${a.type}:${a.value}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
+}
+
+async function ensureTlsCert() {
+  try {
+    const [key, cert] = await Promise.all([
+      fs.readFile(TLS_KEY_PATH),
+      fs.readFile(TLS_CERT_PATH),
+    ]);
+    return { key, cert };
+  } catch {
+    await fs.mkdir(TLS_DIR, { recursive: true });
+    const altNames = collectAltNames();
+    console.log(`[tls] Generating self-signed cert for: ${altNames.map((a) => a.value).join(', ')}`);
+    const pems = await selfsigned.generate(
+      [{ name: 'commonName', value: 'judex-web-local' }],
+      {
+        keySize: 2048,
+        days: 3650,
+        algorithm: 'sha256',
+        extensions: [{ name: 'subjectAltName', altNames }],
+      },
+    );
+    await fs.writeFile(TLS_KEY_PATH, pems.private);
+    await fs.writeFile(TLS_CERT_PATH, pems.cert);
+    console.log(`[tls] Cert written to ${TLS_DIR}`);
+    return { key: Buffer.from(pems.private), cert: Buffer.from(pems.cert) };
+  }
+}
+
+const { key: tlsKey, cert: tlsCert } = await ensureTlsCert();
+const server = http2.createSecureServer(
+  { key: tlsKey, cert: tlsCert, allowHTTP1: true },
+  app,
+);
+server.listen(PORT, () => {
+  console.log(`Stream backend running at https://localhost:${PORT} (HTTP/2 + HTTP/1.1)`);
   console.log(`Serving HLS from: ${streamDir}`);
-  console.log(`Playlist URL: http://localhost:${PORT}/stream/playlist.m3u8`);
+  console.log(`Playlist URL: https://localhost:${PORT}/stream/playlist.m3u8`);
 });

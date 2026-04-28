@@ -2,12 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { StreamPlayer } from './StreamPlayer';
 import type { StreamPlayerHandle } from './StreamPlayer';
 import { BounceClipVideo } from './BounceClipVideo';
+import { resolveApi } from '../api-base';
 import './MultiReplayScreen.css';
 
 const SPEEDS = [0.25, 0.5, 1, 1.25, 1.5] as const;
 const SKIP_SECONDS = 5;
 const SYNC_THRESHOLD_SEC = 0.15;
 const FPS = 30;
+// On open, jump to the last N seconds of the synced window so the most recent
+// action plays immediately. Backward scrubbing relies on the parallel .ts prefetch.
+const TAIL_OFFSET_SEC = 10;
+// Number of trailing segments per camera to prefetch with priority before
+// issuing the tail seek. Awaiting these guarantees the seek lands in cache.
+const TAIL_PRIORITY_BATCH = 3;
 
 const CAMERA_LABELS = { source: 'Source', hq: 'HQ', sink: 'Sink' } as const;
 type CameraKey = keyof typeof CAMERA_LABELS;
@@ -123,9 +130,22 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
 
     (async () => {
       try {
-        const res = await fetch(`/api/replay/multi/${segmentId}?minutes=${minutes}`);
+        const res = await fetch(resolveApi(`/api/replay/multi/${segmentId}?minutes=${minutes}`));
         const data = await res.json();
         if (!res.ok) throw new Error(data?.error ?? 'Failed to load');
+        // Resolve camera playlist URLs against API_BASE so hls.js (and our
+        // prefetch) hit the HTTPS+HTTP/2 backend directly. Any .ts URIs in
+        // the playlist are relative, so they'll be resolved against this
+        // absolute playlist URL automatically by both hls.js and the URL
+        // constructor we use during prefetch.
+        if (data && data.cameras) {
+          for (const cam of Object.keys(data.cameras)) {
+            const ci = data.cameras[cam];
+            if (ci && typeof ci.url === 'string') {
+              ci.url = resolveApi(ci.url);
+            }
+          }
+        }
         if (!cancelled) setMeta(data);
       } catch (e) {
         if (!cancelled) setError(e instanceof Error ? e.message : 'Unknown error');
@@ -139,7 +159,7 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
 
   // Live bounce events via SSE — receives all current events on 'init', new rows on 'new-events'
   useEffect(() => {
-    const es = new EventSource('/api/events/live/stream');
+    const es = new EventSource(resolveApi('/api/events/live/stream'));
 
     es.addEventListener('init', (e) => {
       try {
@@ -409,10 +429,13 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
       seekToSyncTime(ev.timeSec);
       setSelectedEventClips({ marker: ev, clips: [], loading: true, error: null });
       try {
-        const r = await fetch(`/api/event-clips/${ev.frame}`);
+        const r = await fetch(resolveApi(`/api/event-clips/${ev.frame}`));
         const data = (await r.json()) as { clips?: EventClipRow[]; error?: string };
         if (!r.ok) throw new Error(data?.error ?? 'Failed to load clip list');
-        const clips = Array.isArray(data?.clips) ? data.clips : [];
+        const clips = (Array.isArray(data?.clips) ? data.clips : []).map((c) => ({
+          ...c,
+          url: resolveApi(c.url),
+        }));
         setSelectedEventClips({ marker: ev, clips, loading: false, error: null });
       } catch (e) {
         setSelectedEventClips({
@@ -512,22 +535,131 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
     getAllVideos().forEach((v) => { v.playbackRate = speed; });
   }, [speed, getAllVideos]);
 
-  // Initial seek to startOffsetSec for each camera
+  const didInitialTailSeekRef = useRef(false);
+  const prefetchKickedOffRef = useRef(false);
+
+  // Reset guards whenever the replay window changes so a new (segmentId,
+  // minutes) load triggers a fresh prefetch + tail seek.
+  useEffect(() => {
+    didInitialTailSeekRef.current = false;
+    prefetchKickedOffRef.current = false;
+  }, [segmentId, minutes]);
+
+  // Coordinated tail-first prefetch + tail seek + backfill.
+  //
+  // The browser's HTTP/1.1 per-origin cap (6 connections, minus 1 held by
+  // SSE for live events) means firing all .ts fetches at once is no faster
+  // than firing them in waves — and worse, it lets random middle segments
+  // land in cache before the segments we actually need first (the tail).
+  //
+  // Phases:
+  //   1. Fetch all 3 camera playlists in parallel.
+  //   2. Await the last TAIL_PRIORITY_BATCH segments of each camera so the
+  //      tail seek lands in cache, not on an empty buffer.
+  //   3. Wait for the leader's `duration` to be finite (Chrome silently
+  //      drops `currentTime = X` while duration is NaN), then seek and
+  //      verify-and-retry in case hls.js MANIFEST_PARSED snaps the
+  //      playhead back to 0 after our seek.
+  //   4. Backfill the rest of each camera's segments in batches of
+  //      BACKFILL_BATCH_SIZE so we stay under the 6-connection cap.
   useEffect(() => {
     if (!meta || loading) return;
+    // Guard against StrictMode double-mount and any spurious re-runs from
+    // unrelated dep changes (`duration` updates after first fragment).
+    if (prefetchKickedOffRef.current) return;
+    prefetchKickedOffRef.current = true;
 
-    const applyInitialSeek = () => {
-      for (const cam of CAMERAS) {
-        const v = refs[cam].current?.getVideo();
-        const offset = meta.syncOffsets?.[cam]?.startOffsetSec ?? 0;
-        if (v && Number.isFinite(v.duration) && offset > 0) {
-          v.currentTime = offset;
-        }
+    const syncDur = meta.syncDurationSec ?? duration;
+    if (!syncDur || syncDur <= 0) return;
+
+    const target = Math.max(0, syncDur - TAIL_OFFSET_SEC);
+    const targetSourceTime = target + sourceStartOffset;
+
+    const ac = new AbortController();
+
+    const fetchUrl = (u: string) =>
+      fetch(u, { signal: ac.signal }).catch(() => {});
+
+    const fetchPlaylistTsUrls = async (playlistUrl: string): Promise<string[]> => {
+      try {
+        const res = await fetch(playlistUrl, { signal: ac.signal });
+        if (!res.ok) return [];
+        const text = await res.text();
+        const base = new URL(playlistUrl, window.location.origin);
+        return text
+          .split(/\r?\n/)
+          .map((l) => l.trim())
+          .filter((l) => l && !l.startsWith('#'))
+          .map((l) => new URL(l, base).toString());
+      } catch {
+        return [];
       }
     };
 
-    const timerId = setTimeout(applyInitialSeek, 500);
-    return () => { clearTimeout(timerId); };
+    const waitForLeaderDuration = async (): Promise<boolean> => {
+      for (let i = 0; i < 60; i++) {
+        if (ac.signal.aborted) return false;
+        const leader = sourceRef.current?.getVideo();
+        if (leader && Number.isFinite(leader.duration) && leader.duration > 0) {
+          return true;
+        }
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return false;
+    };
+
+    void (async () => {
+      // Phase 1: playlists in parallel; reverse so tail is at index 0.
+      const reversedByCam = await Promise.all(
+        CAMERAS.map(async (cam) => {
+          const u = meta.cameras[cam]?.url;
+          if (!u) return [] as string[];
+          const urls = await fetchPlaylistTsUrls(u);
+          return urls.slice().reverse();
+        }),
+      );
+      if (ac.signal.aborted) return;
+
+      // Phase 2: prioritized tail batch across all cameras — these MUST be
+      // cached before we issue the seek, otherwise the seek lands on an
+      // empty buffer and Chrome may snap the playhead back to 0.
+      const tailUrls = reversedByCam.flatMap((urls) => urls.slice(0, TAIL_PRIORITY_BATCH));
+      await Promise.all(tailUrls.map(fetchUrl));
+      if (ac.signal.aborted) return;
+
+      // Phase 3: tail is warm — issue the seek as soon as the leader has
+      // a usable duration, then verify it stuck (retry once if not).
+      if (!didInitialTailSeekRef.current) {
+        const ready = await waitForLeaderDuration();
+        if (ac.signal.aborted) return;
+        if (ready) {
+          seekToSyncTime(target);
+          didInitialTailSeekRef.current = true;
+          setTimeout(() => {
+            if (ac.signal.aborted) return;
+            const leader = sourceRef.current?.getVideo();
+            if (leader && leader.currentTime < targetSourceTime - 5) {
+              seekToSyncTime(target);
+            }
+          }, 1200);
+        }
+      }
+
+      // Phase 4: backfill the rest of each camera's timeline. With HTTP/2
+      // there is no per-origin connection cap to respect, so we fire every
+      // remaining segment across all 3 cameras in one shot and let the
+      // server multiplex. The browser's HTTP/2 stack handles streaming
+      // them in parallel over a single TLS connection.
+      const backfillUrls = reversedByCam.flatMap((urls) => urls.slice(TAIL_PRIORITY_BATCH));
+      await Promise.all(backfillUrls.map(fetchUrl));
+    })();
+
+    return () => ac.abort();
+    // We deliberately depend only on (meta, loading): seekToSyncTime and
+    // sourceStartOffset are read via closure and are stable once meta is
+    // set. Re-running on `duration` updates would tear down an in-flight
+    // backfill for no benefit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [meta, loading]);
 
   const seekFraction = duration > 0 ? currentTime / duration : 0;

@@ -2,11 +2,11 @@ import { useCallback, useEffect, useState } from 'react';
 import { StreamPlayer } from './components/StreamPlayer';
 import { ReplayScreen } from './components/ReplayScreen';
 import { MultiReplayScreen } from './components/MultiReplayScreen';
+import { API_BASE, resolveApi } from './api-base';
 import './App.css';
 
 const STREAM_URL =
-  import.meta.env.VITE_STREAM_URL ?? '/stream/playlist.m3u8';
-const API_BASE = import.meta.env.VITE_API_BASE ?? '';
+  import.meta.env.VITE_STREAM_URL ?? resolveApi('/stream/playlist.m3u8');
 
 function getPathname() {
   return window.location.pathname;
@@ -230,16 +230,16 @@ export default function App() {
   const startMultiReplay = useCallback(() => {
     const segId = multiSegmentId.trim() || sessionStatus.trackId;
     if (!segId) return;
-    const parsed = Number(snapshotMinutes);
-    const mins = Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
+    // 3-camera replay window is fixed at 3 minutes.
+    const mins = 3;
     const url = `/multi-replay/${segId}?minutes=${mins}`;
     window.history.pushState({}, '', url);
     setPathname(getPathname());
-  }, [multiSegmentId, sessionStatus.trackId, snapshotMinutes]);
+  }, [multiSegmentId, sessionStatus.trackId]);
 
   if (route === 'multi-replay' && multiReplayId) {
     const params = new URLSearchParams(window.location.search);
-    const mins = Number(params.get('minutes')) || 5;
+    const mins = Number(params.get('minutes')) || 3;
     return (
       <MultiReplayScreen
         segmentId={multiReplayId}

@@ -1,5 +1,6 @@
 # Directories (trailing / = directory only)
 backend/stream-output/
+backend/.tls/
 pi_data/
 sync_reports/
 ts_segments_*/
