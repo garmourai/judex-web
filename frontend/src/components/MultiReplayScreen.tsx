@@ -623,51 +623,57 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
       }
     };
 
-    // Strict tail-first ordering:
-    //   Phase 1: fetch all 3 playlists in parallel.
-    //   Phase 2: fetch the tail batch (last TAIL_PRIORITY_BATCH segments
-    //            per camera, ~12 s of video covering the last 10 s) in
-    //            parallel and AWAIT it. Under HTTP/1.1 the browser's
-    //            6-connection pool processes requests in dispatch order,
-    //            so awaiting here is what actually guarantees these
-    //            segments arrive before the backfill starts competing
-    //            for the same connections. Under HTTP/2 the streams
-    //            multiplex anyway and the await is essentially free.
-    //   Phase 3: fan out the rest of each camera's timeline in parallel.
-    //            By the time we reach this phase the upcoming tail seek
-    //            has either already landed in cache (Phase 2 segments)
-    //            or is about to.
+    // Per-camera pipeline: as soon as a playlist arrives, fire ALL of
+    // that camera's segments in one shot — tail first (high-priority
+    // hint), the rest at default priority. There is NO global await
+    // across cameras and NO await between tail and backfill, because:
+    //   - Under HTTP/1.1 (Vite-proxy mode) the 6-connection pool
+    //     processes in dispatch order, so the high-priority tail URLs
+    //     get dispatched first anyway. Adding a global await there
+    //     starves hls.js's own manifest + first-segment fetches for
+    //     the same connection budget, which leaves `video.duration`
+    //     as NaN and the tail seek never fires.
+    //   - Under HTTP/2 (direct backend) all streams multiplex over one
+    //     connection so explicit ordering is unnecessary; the priority
+    //     hint is honored by Chrome's stream scheduler.
+    //
+    // The `inFlightPrefetches` Map entry is removed in `finally` once
+    // every fetch has settled. While the prefetch is in flight, the
+    // entry stays in the Map so StrictMode tear-down + remount still
+    // skips a duplicate run; once it finishes, navigating away and
+    // back (or re-opening after a page interaction) starts a fresh
+    // prefetch instead of bailing forever on a stale entry.
+    let firedCount = 0;
     void (async () => {
-      const reversedByCam = await Promise.all(
-        CAMERAS.map(async (cam) => {
-          const u = meta.cameras[cam]?.url;
-          if (!u) return [] as string[];
-          return (await fetchPlaylistTsUrls(u)).reverse();
-        }),
-      );
-      if (ac.signal.aborted) return;
-
-      const tailUrls = reversedByCam.flatMap((urls) => urls.slice(0, TAIL_PRIORITY_BATCH));
-      if (import.meta.env.DEV) {
-        console.log(`[MultiReplay prefetch] tail-first: awaiting ${tailUrls.length} segments`);
-      }
-      await Promise.all(tailUrls.map((u) => fetchUrl(u, 'high')));
-      if (ac.signal.aborted) return;
-      if (import.meta.env.DEV) {
-        console.log('[MultiReplay prefetch] tail done, firing backfill');
-      }
-
-      const backfillUrls = reversedByCam.flatMap((urls) => urls.slice(TAIL_PRIORITY_BATCH));
-      await Promise.all(backfillUrls.map((u) => fetchUrl(u)));
-      if (import.meta.env.DEV) {
-        console.log(`[MultiReplay prefetch] backfill done (${backfillUrls.length} segments)`);
+      try {
+        await Promise.all(
+          CAMERAS.map(async (cam) => {
+            const u = meta.cameras[cam]?.url;
+            if (!u) return;
+            const reversed = (await fetchPlaylistTsUrls(u)).reverse();
+            if (ac.signal.aborted) return;
+            const fetchPromises: Promise<unknown>[] = [];
+            for (let i = 0; i < reversed.length; i++) {
+              fetchPromises.push(
+                fetchUrl(reversed[i], i < TAIL_PRIORITY_BATCH ? 'high' : undefined),
+              );
+              firedCount++;
+            }
+            if (import.meta.env.DEV) {
+              console.log(
+                `[MultiReplay prefetch] ${cam}: fired ${reversed.length} .ts fetches (running total: ${firedCount})`,
+              );
+            }
+            await Promise.all(fetchPromises);
+          }),
+        );
+        if (import.meta.env.DEV) {
+          console.log(`[MultiReplay prefetch] complete (${firedCount} segments)`);
+        }
+      } finally {
+        inFlightPrefetches.delete(key);
       }
     })();
-
-    // No cleanup that aborts. StrictMode tear-down/remount won't kill the
-    // work; a true unmount lets the in-flight fetches finish (the browser
-    // caches them anyway). If the user re-opens the same window, the Map
-    // entry is still present and we skip.
   }, [meta, loading, segmentId, minutes]);
 
   // Tail-seek effect, independent of the prefetch.
