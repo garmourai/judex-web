@@ -13,8 +13,16 @@ const FPS = 30;
 // action plays immediately. Backward scrubbing relies on the parallel .ts prefetch.
 const TAIL_OFFSET_SEC = 10;
 // Number of trailing segments per camera to prefetch with priority before
-// issuing the tail seek. Awaiting these guarantees the seek lands in cache.
+// firing the rest of the timeline. Awaiting these helps hls.js's first
+// segment fetch on the tail seek hit the cache.
 const TAIL_PRIORITY_BATCH = 3;
+
+// Map keyed by `${segmentId}:${minutes}` so the same replay window only
+// prefetches once across React StrictMode tear-down/remount and Vite HMR
+// remounts. Lives at module scope so it's not destroyed by component
+// lifecycle. The AbortController is kept around in case a future caller
+// wants to cancel, but we never abort on tear-down (that was the bug).
+const inFlightPrefetches = new Map<string, AbortController>();
 
 const CAMERA_LABELS = { source: 'Source', hq: 'HQ', sink: 'Sink' } as const;
 type CameraKey = keyof typeof CAMERA_LABELS;
@@ -305,7 +313,15 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
       if (leader && !seekingRef.current && !leader.seeking) {
         const t = leader.currentTime;
         const syncT = Math.max(0, t - sourceStartOffset);
-        setCurrentTime(syncT);
+        // Don't let the rAF loop snap the seeker back to 0 before the
+        // initial tail seek has actually been applied. Without this gate
+        // the seeker briefly shows the pre-set tail position then flashes
+        // to 0:00 while hls.js is still loading the manifest, then jumps
+        // back once the seek fires. After the seek (or once leader has
+        // any non-zero currentTime), we resume normal tracking.
+        if (didInitialTailSeekRef.current || syncT > 0.1) {
+          setCurrentTime(syncT);
+        }
         const leaderPlaying = !leader.paused;
         setPlaying(leaderPlaying);
 
@@ -536,49 +552,60 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
   }, [speed, getAllVideos]);
 
   const didInitialTailSeekRef = useRef(false);
-  const prefetchKickedOffRef = useRef(false);
 
-  // Reset guards whenever the replay window changes so a new (segmentId,
-  // minutes) load triggers a fresh prefetch + tail seek.
+  // Reset the tail-seek guard whenever the replay window changes so a new
+  // (segmentId, minutes) load triggers a fresh seek attempt.
   useEffect(() => {
     didInitialTailSeekRef.current = false;
-    prefetchKickedOffRef.current = false;
   }, [segmentId, minutes]);
 
-  // Coordinated tail-first prefetch + tail seek + backfill.
-  //
-  // The browser's HTTP/1.1 per-origin cap (6 connections, minus 1 held by
-  // SSE for live events) means firing all .ts fetches at once is no faster
-  // than firing them in waves — and worse, it lets random middle segments
-  // land in cache before the segments we actually need first (the tail).
-  //
-  // Phases:
-  //   1. Fetch all 3 camera playlists in parallel.
-  //   2. Await the last TAIL_PRIORITY_BATCH segments of each camera so the
-  //      tail seek lands in cache, not on an empty buffer.
-  //   3. Wait for the leader's `duration` to be finite (Chrome silently
-  //      drops `currentTime = X` while duration is NaN), then seek and
-  //      verify-and-retry in case hls.js MANIFEST_PARSED snaps the
-  //      playhead back to 0 after our seek.
-  //   4. Backfill the rest of each camera's segments in batches of
-  //      BACKFILL_BATCH_SIZE so we stay under the 6-connection cap.
+  // Pre-position the seeker UI at the tail target as soon as we know the
+  // replay duration — i.e. immediately after meta loads, well before
+  // hls.js has fetched enough segments for the actual seek to land. The
+  // rAF loop above is gated to NOT overwrite this until the real seek
+  // applies, so the user sees the playhead at "last 10 s" from the
+  // moment the player appears instead of at 0:00 → flash → 0:00 → jump.
   useEffect(() => {
     if (!meta || loading) return;
-    // Guard against StrictMode double-mount and any spurious re-runs from
-    // unrelated dep changes (`duration` updates after first fragment).
-    if (prefetchKickedOffRef.current) return;
-    prefetchKickedOffRef.current = true;
-
+    if (didInitialTailSeekRef.current) return;
     const syncDur = meta.syncDurationSec ?? duration;
     if (!syncDur || syncDur <= 0) return;
+    setCurrentTime(Math.max(0, syncDur - TAIL_OFFSET_SEC));
+  }, [meta, loading, duration]);
 
-    const target = Math.max(0, syncDur - TAIL_OFFSET_SEC);
-    const targetSourceTime = target + sourceStartOffset;
+  // Prefetch all .ts segments for all 3 cameras into the browser HTTP cache.
+  //
+  // State lives at module level (`inFlightPrefetches`) so React StrictMode's
+  // intentional tear-down + remount doesn't cancel the work. The previous
+  // implementation kept a `prefetchKickedOffRef` and returned an
+  // `() => ac.abort()` cleanup; in StrictMode that cleanup ran between the
+  // two mounts, killing every in-flight fetch, and the second mount bailed
+  // at the guard — so the prefetch never actually completed.
+  //
+  // We still keep an AbortController in the Map for symmetry with future
+  // cancellation callers, but we never abort on cleanup.
+  useEffect(() => {
+    if (!meta || loading) return;
+    const key = `${segmentId}:${minutes}`;
+    if (inFlightPrefetches.has(key)) return;
 
     const ac = new AbortController();
+    inFlightPrefetches.set(key, ac);
 
-    const fetchUrl = (u: string) =>
-      fetch(u, { signal: ac.signal }).catch(() => {});
+    // `priority: 'high'` is a Chromium-only Fetch hint (TS doesn't ship it
+    // in lib.dom yet); other browsers ignore the field.
+    //
+    // We only bump the *tail* batch to 'high' so it lands in cache before
+    // the upcoming seek. Backfill is left at default ('auto') because
+    // Chrome's resource scheduler aggressively *throttles* fetches tagged
+    // 'low' (it holds them back when other resources are in flight), which
+    // would actively reduce parallelism rather than improve it.
+    type PriorityInit = RequestInit & { priority?: 'high' | 'low' | 'auto' };
+    const fetchUrl = (u: string, priority?: 'high') =>
+      fetch(u, {
+        signal: ac.signal,
+        ...(priority ? { priority } : {}),
+      } as PriorityInit).catch(() => {});
 
     const fetchPlaylistTsUrls = async (playlistUrl: string): Promise<string[]> => {
       try {
@@ -596,71 +623,102 @@ export function MultiReplayScreen({ segmentId, minutes, onGoLive }: MultiReplayS
       }
     };
 
-    const waitForLeaderDuration = async (): Promise<boolean> => {
-      for (let i = 0; i < 60; i++) {
-        if (ac.signal.aborted) return false;
-        const leader = sourceRef.current?.getVideo();
-        if (leader && Number.isFinite(leader.duration) && leader.duration > 0) {
-          return true;
-        }
-        await new Promise((r) => setTimeout(r, 100));
-      }
-      return false;
-    };
-
+    // Strict tail-first ordering:
+    //   Phase 1: fetch all 3 playlists in parallel.
+    //   Phase 2: fetch the tail batch (last TAIL_PRIORITY_BATCH segments
+    //            per camera, ~12 s of video covering the last 10 s) in
+    //            parallel and AWAIT it. Under HTTP/1.1 the browser's
+    //            6-connection pool processes requests in dispatch order,
+    //            so awaiting here is what actually guarantees these
+    //            segments arrive before the backfill starts competing
+    //            for the same connections. Under HTTP/2 the streams
+    //            multiplex anyway and the await is essentially free.
+    //   Phase 3: fan out the rest of each camera's timeline in parallel.
+    //            By the time we reach this phase the upcoming tail seek
+    //            has either already landed in cache (Phase 2 segments)
+    //            or is about to.
     void (async () => {
-      // Phase 1: playlists in parallel; reverse so tail is at index 0.
       const reversedByCam = await Promise.all(
         CAMERAS.map(async (cam) => {
           const u = meta.cameras[cam]?.url;
           if (!u) return [] as string[];
-          const urls = await fetchPlaylistTsUrls(u);
-          return urls.slice().reverse();
+          return (await fetchPlaylistTsUrls(u)).reverse();
         }),
       );
       if (ac.signal.aborted) return;
 
-      // Phase 2: prioritized tail batch across all cameras — these MUST be
-      // cached before we issue the seek, otherwise the seek lands on an
-      // empty buffer and Chrome may snap the playhead back to 0.
       const tailUrls = reversedByCam.flatMap((urls) => urls.slice(0, TAIL_PRIORITY_BATCH));
-      await Promise.all(tailUrls.map(fetchUrl));
+      if (import.meta.env.DEV) {
+        console.log(`[MultiReplay prefetch] tail-first: awaiting ${tailUrls.length} segments`);
+      }
+      await Promise.all(tailUrls.map((u) => fetchUrl(u, 'high')));
       if (ac.signal.aborted) return;
-
-      // Phase 3: tail is warm — issue the seek as soon as the leader has
-      // a usable duration, then verify it stuck (retry once if not).
-      if (!didInitialTailSeekRef.current) {
-        const ready = await waitForLeaderDuration();
-        if (ac.signal.aborted) return;
-        if (ready) {
-          seekToSyncTime(target);
-          didInitialTailSeekRef.current = true;
-          setTimeout(() => {
-            if (ac.signal.aborted) return;
-            const leader = sourceRef.current?.getVideo();
-            if (leader && leader.currentTime < targetSourceTime - 5) {
-              seekToSyncTime(target);
-            }
-          }, 1200);
-        }
+      if (import.meta.env.DEV) {
+        console.log('[MultiReplay prefetch] tail done, firing backfill');
       }
 
-      // Phase 4: backfill the rest of each camera's timeline. With HTTP/2
-      // there is no per-origin connection cap to respect, so we fire every
-      // remaining segment across all 3 cameras in one shot and let the
-      // server multiplex. The browser's HTTP/2 stack handles streaming
-      // them in parallel over a single TLS connection.
       const backfillUrls = reversedByCam.flatMap((urls) => urls.slice(TAIL_PRIORITY_BATCH));
-      await Promise.all(backfillUrls.map(fetchUrl));
+      await Promise.all(backfillUrls.map((u) => fetchUrl(u)));
+      if (import.meta.env.DEV) {
+        console.log(`[MultiReplay prefetch] backfill done (${backfillUrls.length} segments)`);
+      }
     })();
 
-    return () => ac.abort();
-    // We deliberately depend only on (meta, loading): seekToSyncTime and
-    // sourceStartOffset are read via closure and are stable once meta is
-    // set. Re-running on `duration` updates would tear down an in-flight
-    // backfill for no benefit.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [meta, loading]);
+    // No cleanup that aborts. StrictMode tear-down/remount won't kill the
+    // work; a true unmount lets the in-flight fetches finish (the browser
+    // caches them anyway). If the user re-opens the same window, the Map
+    // entry is still present and we skip.
+  }, [meta, loading, segmentId, minutes]);
+
+  // Tail-seek effect, independent of the prefetch.
+  //
+  // Polls for the source leader video to have a finite, positive `duration`
+  // (Chrome silently drops `video.currentTime = X` while duration is NaN),
+  // then seeks to `syncDurationSec - TAIL_OFFSET_SEC`. After 1.2 s it
+  // verifies the seek stuck — if hls.js MANIFEST_PARSED snapped the
+  // playhead back to 0 in between, we issue the seek a second time.
+  useEffect(() => {
+    if (!meta || loading) return;
+    if (didInitialTailSeekRef.current) return;
+
+    const syncDur = meta.syncDurationSec ?? duration;
+    if (!syncDur || syncDur <= 0) return;
+
+    const target = Math.max(0, syncDur - TAIL_OFFSET_SEC);
+    const targetSourceTime = target + sourceStartOffset;
+
+    let cancelled = false;
+    let pollId: ReturnType<typeof setTimeout> | undefined;
+    let verifyId: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const MAX_ATTEMPTS = 80; // ~8s @ 100ms
+
+    const trySeek = () => {
+      if (cancelled || didInitialTailSeekRef.current) return;
+      const leader = sourceRef.current?.getVideo();
+      const ready = leader && Number.isFinite(leader.duration) && leader.duration > 0;
+      if (ready) {
+        seekToSyncTime(target);
+        didInitialTailSeekRef.current = true;
+        verifyId = setTimeout(() => {
+          if (cancelled) return;
+          const l = sourceRef.current?.getVideo();
+          if (l && l.currentTime < targetSourceTime - 5) {
+            seekToSyncTime(target);
+          }
+        }, 1200);
+        return;
+      }
+      if (attempts++ < MAX_ATTEMPTS) pollId = setTimeout(trySeek, 100);
+    };
+
+    pollId = setTimeout(trySeek, 100);
+    return () => {
+      cancelled = true;
+      if (pollId) clearTimeout(pollId);
+      if (verifyId) clearTimeout(verifyId);
+    };
+  }, [meta, loading, duration, seekToSyncTime, sourceStartOffset, segmentId, minutes]);
 
   const seekFraction = duration > 0 ? currentTime / duration : 0;
 

@@ -238,8 +238,9 @@ export default function App() {
   }, [multiSegmentId, sessionStatus.trackId]);
 
   if (route === 'multi-replay' && multiReplayId) {
-    const params = new URLSearchParams(window.location.search);
-    const mins = Number(params.get('minutes')) || 3;
+    // 3-camera replay window is fixed at 3 minutes regardless of any
+    // stale `?minutes=...` carried over from older URLs/bookmarks.
+    const mins = 3;
     return (
       <MultiReplayScreen
         segmentId={multiReplayId}

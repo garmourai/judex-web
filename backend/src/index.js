@@ -1043,7 +1043,20 @@ async function ensureTlsCert() {
 
 const { key: tlsKey, cert: tlsCert } = await ensureTlsCert();
 const server = http2.createSecureServer(
-  { key: tlsKey, cert: tlsCert, allowHTTP1: true },
+  {
+    key: tlsKey,
+    cert: tlsCert,
+    allowHTTP1: true,
+    // Default Node behavior advertises no SETTINGS_MAX_CONCURRENT_STREAMS,
+    // and the per-session `peerMaxConcurrentStreams` defaults to 100 — but
+    // Chrome's HTTP/2 stack also has its own internal cap when the server
+    // doesn't advertise an explicit value. Setting both explicitly to a
+    // generous number guarantees the multi-replay's ~135 parallel .ts
+    // prefetches all get streams instead of being queued by the browser
+    // waiting for capacity. 256 is a safe upper bound for our use case.
+    settings: { maxConcurrentStreams: 256 },
+    peerMaxConcurrentStreams: 256,
+  },
   app,
 );
 server.listen(PORT, () => {
