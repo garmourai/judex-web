@@ -71,6 +71,8 @@ export default function App() {
   const [sessionError, setSessionError] = useState<string | null>(null);
   const [streamKey, setStreamKey] = useState(0);
 
+  const [cacheStatus, setCacheStatus] = useState({ source: 0, hq: 0, sink: 0 });
+
   useEffect(() => {
     const onPopState = () => setPathname(getPathname());
     window.addEventListener('popstate', onPopState);
@@ -128,6 +130,70 @@ export default function App() {
       .then((data) => setSessionStatus(data))
       .catch(() => {});
   }, []);
+
+  // Background segment pre-fetcher: polls all 3 camera live playlists every 4 s while capture is
+  // active, fetching each new .ts segment so the browser caches it. When the user clicks "Replay",
+  // the VOD playlists reference the same URLs that are already in the browser cache → instant load.
+  // We poll /cam/source/{trackId}/ (not /stream/) so URLs match what the VOD m3u8 will reference.
+  useEffect(() => {
+    if (!sessionStatus.captureActive || !sessionStatus.trackId) return;
+    const trackId = sessionStatus.trackId;
+    const MAX_CACHED = 45;
+    let cancelled = false;
+
+    const cameras: Record<string, string> = {
+      source: `/cam/source/${trackId}/playlist.m3u8`,
+      hq: `/cam/hq/${trackId}/playlist.m3u8`,
+      sink: `/cam/sink/${trackId}/playlist.m3u8`,
+    };
+
+    // Fresh seen-sets for this capture session (captured by closures below)
+    const seen: Record<string, Set<string>> = { source: new Set(), hq: new Set(), sink: new Set() };
+
+    async function pollCamera(cam: string, m3u8Url: string) {
+      try {
+        const res = await fetch(m3u8Url, { cache: 'no-store' });
+        if (cancelled || !res.ok) return;
+        const text = await res.text();
+        if (cancelled) return;
+        const base = m3u8Url.slice(0, m3u8Url.lastIndexOf('/') + 1);
+        const segUrls: string[] = [];
+        for (const line of text.split('\n')) {
+          const t = line.trim();
+          if (!t || t.startsWith('#')) continue;
+          segUrls.push(t.startsWith('http') || t.startsWith('/') ? t : base + t);
+        }
+        const recent = segUrls.slice(-MAX_CACHED);
+        const camSeen = seen[cam];
+        for (const url of recent) {
+          if (!camSeen.has(url)) {
+            camSeen.add(url);
+            fetch(url).catch(() => {});
+          }
+        }
+        if (camSeen.size > MAX_CACHED) {
+          const arr = Array.from(camSeen);
+          arr.slice(0, arr.length - MAX_CACHED).forEach((u) => camSeen.delete(u));
+        }
+        if (!cancelled) {
+          setCacheStatus((prev) => ({ ...prev, [cam]: Math.min(camSeen.size, MAX_CACHED) }));
+        }
+      } catch { /* polling errors are normal during live capture */ }
+    }
+
+    function poll() {
+      Object.entries(cameras).forEach(([c, u]) => { void pollCamera(c, u); });
+    }
+
+    poll();
+    const id = setInterval(poll, 4000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(id);
+      setCacheStatus({ source: 0, hq: 0, sink: 0 });
+    };
+  }, [sessionStatus.captureActive, sessionStatus.trackId]);
 
   const prepareCamera = useCallback(async () => {
     setSessionError(null);
@@ -304,6 +370,25 @@ export default function App() {
             {sessionStatus.stoppingCapture ? 'Stopping…' : 'Stop Capture'}
           </button>
         </div>
+
+        {sessionStatus.captureActive && sessionStatus.trackId && (
+          <div className="live-replay-bar">
+            <span className="cache-status-text">
+              Buffered — Source: {cacheStatus.source}/45 · HQ: {cacheStatus.hq}/45 · Sink: {cacheStatus.sink}/45
+            </span>
+            <button
+              type="button"
+              className="session-btn session-btn--replay"
+              onClick={() => {
+                const url = `/multi-replay/${sessionStatus.trackId}?minutes=3`;
+                window.history.pushState({}, '', url);
+                setPathname(getPathname());
+              }}
+            >
+              Replay Last 3 Min
+            </button>
+          </div>
+        )}
 
         {(sessionError || sessionStatus.error) && (
           <p className="error-text">{sessionError || sessionStatus.error}</p>

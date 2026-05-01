@@ -31,8 +31,8 @@ const EVENTS_ROOT = path.resolve(__dirname, '..', '..', 'events');
 
 const CAMERA_DIRS = {
   source: TS_SEGMENTS_DIR,
-  hq: path.join(SYNC_REPORTS_DIR, 'ts_segments_hq'),
-  sink: path.join(SYNC_REPORTS_DIR, 'ts_segments_sink'),
+  hq: path.join(SYNC_REPORTS_DIR, 'ts_segment_hq'),
+  sink: path.join(SYNC_REPORTS_DIR, 'ts_segment_sink'),
 };
 
 const FPS_ESTIMATE = 30;
