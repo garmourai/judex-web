@@ -9,6 +9,7 @@ export default defineConfig({
       '/api': { target: 'http://localhost:3014', changeOrigin: true },
       '/stream': { target: 'http://localhost:3014', changeOrigin: true },
       '/cam': { target: 'http://localhost:3014', changeOrigin: true },
+      '/replays': { target: 'http://localhost:3014', changeOrigin: true },
       '/events': {
         target: 'http://localhost:3014',
         changeOrigin: true,

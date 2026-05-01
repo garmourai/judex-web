@@ -227,19 +227,44 @@ export default function App() {
     setPathname(getPathname());
   }, []);
 
-  const startMultiReplay = useCallback(() => {
+  const startMultiReplay = useCallback(async () => {
     const segId = multiSegmentId.trim() || sessionStatus.trackId;
     if (!segId) return;
-    const parsed = Number(snapshotMinutes);
-    const mins = Number.isFinite(parsed) && parsed > 0 ? parsed : 3;
-    const url = `/multi-replay/${segId}?minutes=${mins}`;
-    window.history.pushState({}, '', url);
-    setPathname(getPathname());
-  }, [multiSegmentId, sessionStatus.trackId, snapshotMinutes]);
+    // Multi-camera replay length is fixed at 3 minutes regardless of
+    // the single-camera snapshotMinutes input. The snapshotMinutes
+    // selector controls only the single-camera replay length.
+    const mins = 3;
+    try {
+      const res = await fetch(`${API_BASE}/api/replays`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ segmentId: segId, minutes: mins }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.replayId) {
+        throw new Error(data?.error ?? 'Failed to create multi-camera replay');
+      }
+      // Navigate using the persisted replayId so the URL is stable and
+      // the browser HTTP cache can re-use prior loads on refresh.
+      const url = `/multi-replay/${data.replayId}?minutes=${mins}`;
+      window.history.pushState({}, '', url);
+      setPathname(getPathname());
+    } catch (err) {
+      // Fall back to legacy segmentId-based route so the user still gets
+      // a working replay even if persistence fails (e.g. disk write).
+      console.error('[startMultiReplay] persist failed, falling back:', err);
+      const url = `/multi-replay/${segId}?minutes=${mins}`;
+      window.history.pushState({}, '', url);
+      setPathname(getPathname());
+    }
+  }, [multiSegmentId, sessionStatus.trackId, API_BASE]);
 
   if (route === 'multi-replay' && multiReplayId) {
-    const params = new URLSearchParams(window.location.search);
-    const mins = Number(params.get('minutes')) || 5;
+    // Multi-camera replay is always 3 minutes. The `minutes` URL param
+    // is preserved on persisted replays for traceability but ignored
+    // here — the persisted meta.json drives playback length on the
+    // backend already.
+    const mins = 3;
     return (
       <MultiReplayScreen
         segmentId={multiReplayId}

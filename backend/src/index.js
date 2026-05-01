@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { promises as fs } from 'fs';
 import { exec, spawn } from 'child_process';
 import { promisify } from 'util';
+import crypto from 'crypto';
 
 const execAsync = promisify(exec);
 
@@ -25,6 +26,7 @@ const TS_SEGMENTS_DIR = path.join(SOURCE_CODE_DIR, 'ts_segments');
 const TRACK_INDEX_PATH = path.join(SOURCE_CODE_DIR, 'variable_files', 'track_video_index.json');
 
 const SYNC_REPORTS_DIR = path.resolve(__dirname, '..', '..', 'sync_reports');
+const REPLAYS_DIR = path.join(SYNC_REPORTS_DIR, 'replays');
 const WATCHER_SCRIPT = path.resolve(__dirname, '..', '..', 'hls_segment_watcher.py');
 const EVENTS_ROOT = path.resolve(__dirname, '..', '..', 'events');
 
@@ -229,7 +231,7 @@ function buildVodSnapshotPlaylist(segments, startSequence) {
   return body.join('\n');
 }
 
-function buildVodPlaylist(segments, startSequence) {
+function buildVodPlaylist(segments, startSequence, urlPrefix = '') {
   const targetDuration = Math.max(1, Math.ceil(Math.max(...segments.map((s) => s.duration))));
   const body = [
     '#EXTM3U',
@@ -241,7 +243,7 @@ function buildVodPlaylist(segments, startSequence) {
   ];
   for (const seg of segments) {
     body.push(`#EXTINF:${seg.duration.toFixed(3)},`);
-    body.push(seg.uri);
+    body.push(urlPrefix + seg.uri);
     body.push('');
   }
   body.push('#EXT-X-ENDLIST');
@@ -680,6 +682,192 @@ app.get('/api/replay/multi/:segmentId', async (req, res) => {
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }
+});
+
+// --- Persisted multi-camera replays ---
+//
+// Each call to POST /api/replays writes a new directory at
+// `<SYNC_REPORTS_DIR>/replays/<replayId>/` containing one .m3u8 per camera
+// and a meta.json. The .m3u8 files reference .ts segments by absolute
+// path (`/cam/<cam>/<segmentId>/seg_NNNNN.ts`) which the camera
+// middleware already serves with long Cache-Control. The replay
+// playlists themselves are also served immutable, so the browser HTTP
+// cache hits on every reload of the same replayId.
+
+function generateReplayId() {
+  const now = new Date();
+  const pad = (n, w = 2) => String(n).padStart(w, '0');
+  const ts =
+    `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}` +
+    `${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+  const rand = crypto.randomBytes(3).toString('hex');
+  return `r_${ts}_${rand}`;
+}
+
+async function materializeReplay(segmentId, minutes) {
+  const syncInfo = await computeSyncInfo(segmentId, minutes);
+
+  const replayId = generateReplayId();
+  const replayDir = path.join(REPLAYS_DIR, replayId);
+  await fs.mkdir(replayDir, { recursive: true });
+
+  const cameras = {};
+  for (const camKey of ['source', 'hq', 'sink']) {
+    const baseDir = CAMERA_DIRS[camKey];
+    const segDir = path.join(baseDir, segmentId);
+    let allSegs = [];
+    try {
+      allSegs = await discoverSegments(segDir);
+    } catch {
+      cameras[camKey] = { url: null, durationSec: 0, segmentCount: 0, error: 'Unavailable' };
+      continue;
+    }
+    if (!allSegs.length) {
+      cameras[camKey] = { url: null, durationSec: 0, segmentCount: 0, error: 'No segments' };
+      continue;
+    }
+
+    const ci = syncInfo?.camInfo?.[camKey];
+    let selected;
+    if (ci) {
+      selected = allSegs.filter(
+        (s) => s.sequence >= ci.startSegNum && s.sequence <= ci.endSegNum,
+      );
+    } else {
+      // Duration-based fallback (matches /cam/.../replay.m3u8 behavior)
+      const targetSec = minutes * 60;
+      selected = [];
+      let total = 0;
+      for (let i = allSegs.length - 1; i >= 0; i--) {
+        selected.push(allSegs[i]);
+        total += allSegs[i].duration;
+        if (total >= targetSec) break;
+      }
+      selected.reverse();
+    }
+
+    if (!selected.length) {
+      cameras[camKey] = { url: null, durationSec: 0, segmentCount: 0, error: 'No matching segments' };
+      continue;
+    }
+
+    const playlist = buildVodPlaylist(
+      selected,
+      selected[0].sequence,
+      `/cam/${camKey}/${segmentId}/`,
+    );
+    await fs.writeFile(path.join(replayDir, `${camKey}.m3u8`), playlist, 'utf8');
+
+    const durationSec = selected.reduce((s, seg) => s + seg.duration, 0);
+    cameras[camKey] = {
+      url: `/replays/${replayId}/${camKey}.m3u8`,
+      durationSec: Number(durationSec.toFixed(3)),
+      segmentCount: selected.length,
+    };
+  }
+
+  const meta = {
+    replayId,
+    segmentId,
+    minutes,
+    syncMethod: syncInfo ? 'csv' : 'duration',
+    syncDurationSec: syncInfo?.syncDurationSec,
+    cameras,
+    syncOffsets: syncInfo?.syncOffsets,
+    frameInfo: syncInfo?.frameInfo,
+    syncMap: syncInfo?.syncMap,
+    createdAt: new Date().toISOString(),
+  };
+  await fs.writeFile(
+    path.join(replayDir, 'meta.json'),
+    JSON.stringify(meta, null, 2),
+    'utf8',
+  );
+
+  return meta;
+}
+
+// Create a new persisted replay
+app.post('/api/replays', async (req, res) => {
+  try {
+    const segmentId = String(req.body?.segmentId ?? '').trim();
+    const minutes = Number(req.body?.minutes) || 3;
+    if (!segmentId) return res.status(400).json({ error: 'segmentId is required' });
+    if (!/^\d+$/.test(segmentId)) {
+      return res.status(400).json({ error: 'segmentId must be numeric' });
+    }
+    const meta = await materializeReplay(segmentId, minutes);
+    return res.json(meta);
+  } catch (err) {
+    console.error('[replays] create error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Read a previously persisted replay's meta
+app.get('/api/replays/:replayId', async (req, res) => {
+  try {
+    const { replayId } = req.params;
+    if (!/^[\w-]+$/.test(replayId)) {
+      return res.status(400).json({ error: 'Invalid replayId' });
+    }
+    const metaPath = path.join(REPLAYS_DIR, replayId, 'meta.json');
+    const content = await fs.readFile(metaPath, 'utf8');
+    return res.json(JSON.parse(content));
+  } catch (err) {
+    if (err?.code === 'ENOENT') {
+      return res.status(404).json({ error: 'Replay not found' });
+    }
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// List persisted replays (most recent first)
+app.get('/api/replays', async (_req, res) => {
+  try {
+    await fs.mkdir(REPLAYS_DIR, { recursive: true });
+    const ids = await fs.readdir(REPLAYS_DIR);
+    const replays = [];
+    for (const id of ids) {
+      try {
+        const content = await fs.readFile(path.join(REPLAYS_DIR, id, 'meta.json'), 'utf8');
+        const meta = JSON.parse(content);
+        replays.push({
+          replayId: meta.replayId ?? id,
+          segmentId: meta.segmentId,
+          minutes: meta.minutes,
+          syncDurationSec: meta.syncDurationSec,
+          createdAt: meta.createdAt,
+        });
+      } catch {
+        // skip malformed entries
+      }
+    }
+    replays.sort((a, b) => (b.createdAt ?? '').localeCompare(a.createdAt ?? ''));
+    return res.json({ replays });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Static .m3u8 files for persisted replays. Only .m3u8 is allowed; the
+// .ts segments are served by the existing /cam/... middleware against
+// the camera dirs, not from the replay folder.
+app.use('/replays', (req, res, next) => {
+  if (!req.path.endsWith('.m3u8')) {
+    return res.status(403).json({ error: 'Only .m3u8 files are served from replays.' });
+  }
+  return express.static(REPLAYS_DIR, {
+    setHeaders: (resp, filePath) => {
+      if (filePath.endsWith('.m3u8')) {
+        resp.set('Content-Type', 'application/vnd.apple.mpegurl');
+        // Stored playlists never change after creation; let the browser
+        // cache them for a year so reloads of the same replayId are
+        // instant and contribute zero playlist round-trips.
+        resp.set('Cache-Control', 'public, max-age=31536000, immutable');
+      }
+    },
+  })(req, res, next);
 });
 
 // Snapshot folder serves playlist files only.

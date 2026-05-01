@@ -71,6 +71,44 @@
   display: none;
 }
 
+/* ─── Buffering overlay (manual seek / SourceBuffer gap) ──── */
+.multi-replay-buffering {
+  position: absolute;
+  inset: 0;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  background: rgba(0, 0, 0, 0.45);
+  color: #e4e4e7;
+  font-size: 0.82rem;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  pointer-events: none;
+  backdrop-filter: blur(2px);
+  animation: multi-replay-buffering-fade-in 120ms ease-out;
+}
+
+.multi-replay-buffering-spinner {
+  width: 42px;
+  height: 42px;
+  border: 3px solid rgba(255, 255, 255, 0.18);
+  border-top-color: #a5f3fc;
+  border-radius: 50%;
+  animation: multi-replay-buffering-spin 0.9s linear infinite;
+}
+
+@keyframes multi-replay-buffering-spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes multi-replay-buffering-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
 /* ─── Camera switcher sidebar ────────────────────────────── */
 .multi-replay-sidebar {
   display: flex;

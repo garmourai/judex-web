@@ -19,6 +19,13 @@ type StreamPlayerProps = {
   playbackMode?: 'auto' | 'vod' | 'live';
   /** Hide the native <video> controls (e.g. when the parent provides custom controls). */
   hideNativeControls?: boolean;
+  /**
+   * VOD only: where hls.js should begin loading instead of t=0. Set this
+   * to the tail position so the very first fragment fetched is the one
+   * the user will actually see, instead of fetching seg_0 and then
+   * racing a programmatic `currentTime = ...` against autoplay.
+   */
+  initialPosition?: number;
 } & Omit<ComponentProps<'div'>, 'children'>;
 
 /** VOD playlists must include #EXT-X-ENDLIST (or PLAYLIST-TYPE:VOD) or hls.js treats them as live and only shows the "live edge" (~last few segments). */
@@ -35,9 +42,12 @@ async function playlistLooksLikeVod(playlistUrl: string): Promise<boolean> {
   }
 }
 
-function createHlsOptions(isVod: boolean): Partial<Hls['config']> {
+function createHlsOptions(
+  isVod: boolean,
+  initialPosition?: number,
+): Partial<Hls['config']> {
   if (isVod) {
-    return {
+    const opts: Partial<Hls['config']> = {
       enableWorker: true,
       lowLatencyMode: false,
       // Buffer the entire VOD so every seek lands on already-loaded data.
@@ -47,6 +57,16 @@ function createHlsOptions(isVod: boolean): Partial<Hls['config']> {
       // Never evict old segments — the file is short enough to keep everything in memory.
       backBufferLength: -1,
     };
+    // hls.js's startPosition takes effect on `attachMedia`: the first
+    // fragment it loads, and the position it sets on the media element,
+    // is `initialPosition` instead of 0. This avoids the race where
+    // autoplay-from-zero loads seg_0 while we try to set
+    // currentTime = tail externally — which manifests as the playhead
+    // "snapping back" to seg_0's range mid-seek.
+    if (typeof initialPosition === 'number' && Number.isFinite(initialPosition) && initialPosition > 0) {
+      opts.startPosition = initialPosition;
+    }
+    return opts;
   }
   // Live + DVR: seek back within the playlist window (e.g. 2:15). Requires ffmpeg to keep a long enough
   // sliding playlist (HLS_LIST_SIZE × segment duration). Default hls.js maxBufferLength is 30s — too small.
@@ -75,10 +95,15 @@ function clampToSeekable(video: HTMLVideoElement) {
 }
 
 export const StreamPlayer = forwardRef<StreamPlayerHandle, StreamPlayerProps>(function StreamPlayer(
-  { src, className = '', playbackMode = 'auto', hideNativeControls = false, ...rest },
+  { src, className = '', playbackMode = 'auto', hideNativeControls = false, initialPosition, ...rest },
   ref,
 ) {
   const videoRef = useRef<HTMLVideoElement>(null);
+  // Read inside the hls.js setup effect without re-running it on every
+  // parent re-render. Only the value at construction time matters —
+  // hls.js doesn't honor startPosition changes after attachMedia.
+  const initialPositionRef = useRef(initialPosition);
+  initialPositionRef.current = initialPosition;
 
   useImperativeHandle(ref, () => ({ getVideo: () => videoRef.current }), []);
   const [error, setError] = useState<string | null>(null);
@@ -118,7 +143,7 @@ export const StreamPlayer = forwardRef<StreamPlayerHandle, StreamPlayerProps>(fu
 
       if (Hls.isSupported()) {
         const instance = new Hls({
-          ...createHlsOptions(isVod),
+          ...createHlsOptions(isVod, initialPositionRef.current),
         });
         state.hls = instance;
         if (state.cancelled) {
@@ -146,10 +171,47 @@ export const StreamPlayer = forwardRef<StreamPlayerHandle, StreamPlayerProps>(fu
                 break;
               }
             }
-            if (!covered) instance.startLoad(t);
+            if (!covered) {
+              // Force hls.js to abandon any in-flight fragment load and
+              // restart at the seek target. Calling startLoad() alone is
+              // unreliable here — if hls.js is already mid-load (e.g.
+              // forward-buffering past the previous playhead), the new
+              // start position can be coalesced/ignored and the seek
+              // hangs ("video stuck") even when the segment is already
+              // sitting in the browser HTTP cache from our prefetch.
+              instance.stopLoad();
+              instance.startLoad(t);
+            }
           };
           video.addEventListener('seeking', onVodSeeking);
-          removeSeekClamp = () => video.removeEventListener('seeking', onVodSeeking);
+
+          // If a stall happens AFTER the seek (segment fetch from cache
+          // but append never finished, or readyState hovers below 3),
+          // hls.js exposes recovery hooks. Wire them up so a seek into a
+          // problematic boundary doesn't permanently freeze playback.
+          const onStalled = () => {
+            const t = video.currentTime;
+            const buf = video.buffered;
+            let covered = false;
+            for (let i = 0; i < buf.length; i++) {
+              if (t >= buf.start(i) - 0.1 && t <= buf.end(i) + 0.1) {
+                covered = true;
+                break;
+              }
+            }
+            if (!covered) {
+              instance.stopLoad();
+              instance.startLoad(t);
+            }
+          };
+          video.addEventListener('stalled', onStalled);
+          video.addEventListener('waiting', onStalled);
+
+          removeSeekClamp = () => {
+            video.removeEventListener('seeking', onVodSeeking);
+            video.removeEventListener('stalled', onStalled);
+            video.removeEventListener('waiting', onStalled);
+          };
         }
 
         instance.on(Hls.Events.ERROR, (_e, data) => {
